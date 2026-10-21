@@ -14,7 +14,7 @@ __pycache__/
 venv/
 .venv/
 env/
-
+mqtt_raw_capture.py
 # Testing and IDEs
 .pytest_cache/
 .pytest_temp/
@@ -22,3 +22,4 @@ env/
 htmlcov/
 .vscode/
 .idea/
+Solar_Data_Logger_Formula_Profile(1).pdf

@@ -39,6 +39,7 @@ class MQTTDataCollector:
         duration: int = 1200,
         connect_timeout: float = 10.0,
         subscribe_timeout: float = 10.0,
+        fresh_session: bool = False,
     ) -> None:
         if duration <= 0:
             raise ValueError("Collection duration must be a positive integer.")
@@ -47,8 +48,14 @@ class MQTTDataCollector:
         self.duration = duration
         self.connect_timeout = connect_timeout
         self.subscribe_timeout = subscribe_timeout
-
-        self.client_id = f"solar-collector-{config.logger_serial}-{uuid.uuid4().hex[:6]}"
+        # fresh_session=True creates a new session each run (clean_session=True + random ID).
+        # fresh_session=False (default) matches mqtt_raw_capture.py: uses stable client ID
+        # solar_raw_{serial} and clean_session=False so broker replays queued messages.
+        self.fresh_session = fresh_session
+        if fresh_session:
+            self.client_id = f"solar_raw_{config.logger_serial}-{uuid.uuid4().hex[:6]}"
+        else:
+            self.client_id = f"solar_raw_{config.logger_serial}"
         self.client: Optional[mqtt.Client] = None
 
         # Synchronization primitives
@@ -73,17 +80,23 @@ class MQTTDataCollector:
         self._end_time: Optional[datetime.datetime] = None
 
     def _create_client(self) -> mqtt.Client:
-        """Instantiates and configures the MQTT client."""
+        """Instantiates and configures the MQTT client matching the working reference."""
+        # clean_session=False: broker retains queued QoS 1 messages between reconnects
+        clean_session = self.fresh_session
         if hasattr(mqtt, "CallbackAPIVersion"):
             client = mqtt.Client(
                 callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
                 client_id=self.client_id,
+                clean_session=clean_session,
             )
         else:
-            client = mqtt.Client(client_id=self.client_id)
+            client = mqtt.Client(client_id=self.client_id, clean_session=clean_session)
 
         # Set credentials safely
-        client.username_pw_set(self.config.username, self.config.password)
+        if self.config.username and self.config.password:
+            client.username_pw_set(self.config.username, self.config.password)
+        elif self.config.username:
+            client.username_pw_set(self.config.username)
 
         # TLS configuration
         if self.config.use_tls:
@@ -116,18 +129,24 @@ class MQTTDataCollector:
 
             if not is_failure:
                 self._connect_success = True
+                print(f"[INFO] MQTT connection successful. Broker: {self.config.broker}:{self.config.port}")
                 # Subscribe to target topic with QoS 1
                 res, mid = client.subscribe(self.config.topic, qos=1)
                 if res != mqtt.MQTT_ERR_SUCCESS:
                     self._subscribe_error = f"Immediate subscription error: code {res}"
                     self._errors.append(self._subscribe_error)
+                    print(f"[ERROR] Subscription failed for topic: {self.config.topic} (code: {res})")
                     self.subscribed_event.set()
+                else:
+                    print(f"[INFO] Subscribed to: {self.config.topic} (QoS 1)")
             else:
                 self._connect_success = False
                 self._connect_error = f"Connection refused by broker: {reason_code}"
                 self._errors.append(self._connect_error)
+                print(f"[ERROR] Could not connect to MQTT broker. Reason: {reason_code}")
         except Exception as e:
             self._errors.append(f"Exception in on_connect callback: {e}")
+            print(f"[ERROR] Exception in on_connect: {e}")
         finally:
             self.connected_event.set()
 
@@ -151,6 +170,7 @@ class MQTTDataCollector:
                 self._unexpected_disconnect = True
                 self._disconnect_reason = str(rc)
                 self._errors.append(f"Unexpected broker disconnect: {rc}")
+                print(f"[ERROR] Unexpected disconnect from broker: {rc}")
         except Exception as e:
             self._errors.append(f"Exception in on_disconnect callback: {e}")
 
@@ -171,12 +191,15 @@ class MQTTDataCollector:
 
             if not is_failure:
                 self._subscribe_success = True
+                print(f"[INFO] Subscribed successfully to topic: {self.config.topic} (QoS 1, SUBACK confirmed)")
             else:
                 self._subscribe_success = False
                 self._subscribe_error = f"Subscription rejected by broker: {first_code}"
                 self._errors.append(self._subscribe_error)
+                print(f"[ERROR] Subscription rejected by broker: {first_code}")
         except Exception as e:
             self._errors.append(f"Exception in on_subscribe callback: {e}")
+            print(f"[ERROR] Exception in on_subscribe: {e}")
         finally:
             self.subscribed_event.set()
 
@@ -233,9 +256,12 @@ class MQTTDataCollector:
                 )
                 self._buffer.append(buffered_msg)
 
+            print(f"[DATA] Message #{idx} received | Topic: {message.topic} | Payload bytes: {payload_len} | QoS: {message.qos}")
+
         except Exception as e:
             # Shield callback from unhandled crashes
             self._errors.append(f"Exception processing received message: {e}")
+            print(f"[ERROR] Exception processing received message: {e}")
 
     def collect(self) -> CollectionResult:
         """
@@ -438,6 +464,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Force TLS connection with certificate verification.",
     )
+    parser.add_argument(
+        "--fresh-session",
+        action="store_true",
+        default=False,
+        help=(
+            "Start a clean MQTT session (clean_session=True, random client ID). "
+            "By default a stable client ID and clean_session=False are used so the "
+            "broker replays any QoS 1 messages buffered during disconnection."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -463,7 +499,11 @@ def main() -> int:
         print(f"[FATAL ERROR] Unexpected config error: {err}", file=sys.stderr)
         return 1
 
-    collector = MQTTDataCollector(config=config, duration=args.duration)
+    collector = MQTTDataCollector(
+        config=config,
+        duration=args.duration,
+        fresh_session=args.fresh_session,
+    )
 
     def handle_sigint(sig, frame):
         print("\n[INFO] Interrupt signal caught. Stopping collection gracefully...")

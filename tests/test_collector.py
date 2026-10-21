@@ -40,6 +40,39 @@ def test_collector_configurable_duration_and_short_windows():
         MQTTDataCollector(config=config, duration=-10)
 
 
+def test_collector_default_session_is_persistent():
+    """By default the collector uses stable client ID solar_raw_{serial} and clean_session=False."""
+    config = get_mock_config()
+    collector = MQTTDataCollector(config=config)
+
+    # Default: stable deterministic client ID matching mqtt_raw_capture.py
+    assert collector.client_id == f"solar_raw_{config.logger_serial}"
+    assert collector.fresh_session is False
+
+    # fresh_session mode: random UUID suffix is appended
+    fresh_collector = MQTTDataCollector(config=config, fresh_session=True)
+    assert fresh_collector.client_id.startswith(f"solar_raw_{config.logger_serial}-")
+    # The suffix must be exactly 6 hex chars
+    suffix = fresh_collector.client_id.split("-")[-1]
+    assert len(suffix) == 6
+    assert all(c in "0123456789abcdef" for c in suffix)
+    assert fresh_collector.fresh_session is True
+
+
+def test_collector_client_setup_matches_reference():
+    """Verifies that _create_client() sets client_id, clean_session=False, and callbacks."""
+    config = get_mock_config()
+    collector = MQTTDataCollector(config=config)
+    client = collector._create_client()
+
+    assert client._clean_session is False
+    assert collector.client_id == f"solar_raw_{config.logger_serial}"
+    assert client.on_connect == collector._on_connect
+    assert client.on_disconnect == collector._on_disconnect
+    assert client.on_subscribe == collector._on_subscribe
+    assert client.on_message == collector._on_message
+
+
 def test_collector_successful_connect_and_subscribe():
     config = get_mock_config()
     collector = MQTTDataCollector(config=config, duration=5)
