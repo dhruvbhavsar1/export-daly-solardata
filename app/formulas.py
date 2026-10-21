@@ -27,6 +27,9 @@ class SiteConfig:
     expected_cadence_seconds: Optional[int] = None
     timezone_name: str = "Asia/Kolkata"
     online_timeout_seconds: int = 900
+    energy_unit_verified: bool = False
+    energy_unit: str = "kWh"
+    energy_scale_factor: float = 1.0
 
 
 @dataclass
@@ -177,8 +180,10 @@ class SolarFormulaEngine:
         """
         F01: Interval generated energy.
         E_interval = max(0, E_total_end - E_total_start)
+        Only calculated when cumulative energy counter units are verified.
         """
-        if len(usable_samples) < 2:
+        cfg = self.site_config
+        if not cfg.energy_unit_verified:
             return FormulaResult(
                 formula_id="F01",
                 name="Interval generated energy",
@@ -186,12 +191,30 @@ class SolarFormulaEngine:
                 value=None,
                 unit="unverified_cumulative_units",
                 inputs_used={"sample_count": len(usable_samples)},
+                missing_inputs=["Verified engineering unit for totalEnergy (e.g. kWh vs Wh vs 0.1kWh)"],
+                explanation=(
+                    "Cumulative energy counter (totalEnergy) unit and scaling are unverified. "
+                    "Cannot calculate physical interval energy without confirmed unit scaling."
+                ),
+                assumptions=["Counter unit remains in unverified raw units until vendor spec is confirmed."],
+            )
+
+        if len(usable_samples) < 2:
+            return FormulaResult(
+                formula_id="F01",
+                name="Interval generated energy",
+                status="N/A",
+                value=None,
+                unit=cfg.energy_unit,
+                inputs_used={"sample_count": len(usable_samples)},
                 missing_inputs=[">= 2 consecutive valid samples with totalEnergy"],
                 explanation="Need at least two consecutive valid telemetry readings to compute counter delta.",
             )
 
         intervals: list[dict[str, Any]] = []
         total_delta = 0.0
+        reset_count = 0
+        valid_intervals = 0
 
         for i in range(1, len(usable_samples)):
             s_prev = usable_samples[i - 1]
@@ -209,34 +232,59 @@ class SolarFormulaEngine:
             except (ValueError, TypeError):
                 continue
 
-            # Counter reset check: never accept negative delta
+            # Counter reset / negative delta check:
+            # Negative delta must not silently be treated as valid zero energy.
+            # Flag interval as a reset and exclude from valid generation accumulation.
             if c_float < p_float:
-                delta = 0.0
                 reset_flag = True
+                reset_count += 1
+                intervals.append({
+                    "from_index": s_prev.telemetry.message_index,
+                    "to_index": s_curr.telemetry.message_index,
+                    "delta": None,
+                    "counter_reset": True,
+                    "is_valid_interval": False,
+                    "warning": f"Counter drop detected from {p_float} to {c_float}; excluded as unverified reset/rollover.",
+                })
             else:
-                delta = c_float - p_float
+                delta = (c_float - p_float) * cfg.energy_scale_factor
                 reset_flag = False
+                total_delta += delta
+                valid_intervals += 1
+                intervals.append({
+                    "from_index": s_prev.telemetry.message_index,
+                    "to_index": s_curr.telemetry.message_index,
+                    "delta": delta,
+                    "counter_reset": False,
+                    "is_valid_interval": True,
+                })
 
-            total_delta += delta
-            intervals.append({
-                "from_index": s_prev.telemetry.message_index,
-                "to_index": s_curr.telemetry.message_index,
-                "delta": delta,
-                "counter_reset": reset_flag,
-            })
+        explanation_parts = [
+            f"Calculated from {valid_intervals} valid cumulative totalEnergy interval(s) out of {len(intervals)} total."
+        ]
+        if reset_count > 0:
+            explanation_parts.append(
+                f"{reset_count} interval(s) had negative counter deltas and were flagged and excluded from "
+                "accumulation as unverified reset/rollovers without fabricating rollover modulus."
+            )
 
         return FormulaResult(
             formula_id="F01",
             name="Interval generated energy",
-            status="CALCULATED",
-            value=round(total_delta, 4),
-            unit="unverified_cumulative_units",
-            inputs_used={"intervals": intervals, "interval_count": len(intervals)},
-            explanation=(
-                f"Calculated from cumulative totalEnergy counter deltas over {len(intervals)} intervals. "
-                "Negative deltas (counter resets) were clamped to 0.0 without guessing rollover math."
-            ),
-            assumptions=["Counter unit remains in unverified raw units until vendor spec is confirmed."],
+            status="CALCULATED" if valid_intervals > 0 else "N/A",
+            value=round(total_delta, 4) if valid_intervals > 0 else None,
+            unit=cfg.energy_unit,
+            inputs_used={
+                "intervals": intervals,
+                "interval_count": len(intervals),
+                "valid_intervals": valid_intervals,
+                "reset_intervals": reset_count,
+            },
+            explanation=" ".join(explanation_parts),
+            assumptions=[
+                f"Counter verified as {cfg.energy_unit} (scale factor {cfg.energy_scale_factor}).",
+                *(["Counter reset intervals excluded from generation."] if reset_count > 0 else []),
+            ],
         )
 
     def _eval_f02(self, f01_res: FormulaResult, usable_samples: list[ValidatedSample]) -> FormulaResult:
@@ -244,33 +292,27 @@ class SolarFormulaEngine:
         F02: Period energy.
         E_period = sum(valid interval generation within local period)
         """
-        if f01_res.status != "CALCULATED" or f01_res.value is None:
-            # Fallback check on eToday if interval delta not available
-            if usable_samples:
-                latest = usable_samples[-1]
-                e_today = latest.telemetry.get_scalar("energy_today_raw")
-                if e_today is not None:
-                    return FormulaResult(
-                        formula_id="F02",
-                        name="Period energy",
-                        status="PARTIAL",
-                        value=e_today,
-                        unit="unverified_energy_units",
-                        inputs_used={"eToday_latest": e_today},
-                        explanation=(
-                            "No multi-sample intervals for cumulative delta; showing latest raw eToday reading. "
-                            "Represents partial generation so far, not a full daily/monthly total."
-                        ),
-                        assumptions=["Unverified counter scale; labeled partial so far."],
-                    )
+        cfg = self.site_config
+        if not cfg.energy_unit_verified:
             return FormulaResult(
                 formula_id="F02",
                 name="Period energy",
                 status="N/A",
                 value=None,
                 unit="unverified_cumulative_units",
+                missing_inputs=["Verified engineering unit for energy counters"],
+                explanation="Cannot calculate period energy without verified energy units.",
+            )
+
+        if f01_res.status != "CALCULATED" or f01_res.value is None:
+            return FormulaResult(
+                formula_id="F02",
+                name="Period energy",
+                status="N/A",
+                value=None,
+                unit=cfg.energy_unit,
                 missing_inputs=["F01 valid interval energy"],
-                explanation="No valid interval delta or eToday reading available.",
+                explanation="No valid interval delta available within collection period.",
             )
 
         return FormulaResult(

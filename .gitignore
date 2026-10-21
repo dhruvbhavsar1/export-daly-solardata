@@ -22,4 +22,7 @@ mqtt_raw_capture.py
 htmlcov/
 .vscode/
 .idea/
-Solar_Data_Logger_Formula_Profile(1).pdf
+
+# Reports and generated PDFs
+reports/
+!Solar_Data_Logger_Formula_Profile(1).pdf

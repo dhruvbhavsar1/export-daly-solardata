@@ -75,6 +75,8 @@ def test_phase3_engine_end_to_end_pipeline():
         grid_emission_factor_kg_per_kwh=0.82,
         tree_co2_kg_per_tree_year=22.55,
         expected_cadence_seconds=300,
+        energy_unit_verified=True,
+        energy_unit="kWh",
     )
     engine = Phase3Engine(site_config=site_cfg)
     collection = make_test_collection()

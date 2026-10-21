@@ -42,7 +42,8 @@ def make_sample(
 
 
 def test_f01_interval_energy_normal_and_resets():
-    engine = SolarFormulaEngine()
+    site_cfg = SiteConfig(energy_unit_verified=True, energy_unit="kWh")
+    engine = SolarFormulaEngine(site_config=site_cfg)
 
     # Normal increasing sequence: 7220 -> 7222 -> 7225
     samples = [
@@ -53,6 +54,7 @@ def test_f01_interval_energy_normal_and_resets():
     res = engine.evaluate_all(samples)["F01"]
     assert res.status == "CALCULATED"
     assert res.value == 5.0  # (7222 - 7220) + (7225 - 7222)
+    assert res.unit == "kWh"
 
     # Counter reset: 7225 -> 10 (e.g. inverter replacement/reset)
     samples_with_reset = samples + [
@@ -64,8 +66,20 @@ def test_f01_interval_energy_normal_and_resets():
     assert res_reset.value == 5.0
 
 
-def test_f01_single_sample_returns_na():
+def test_f01_unverified_units_returns_na():
+    # Without verified energy unit, F01 returns structured N/A
     engine = SolarFormulaEngine()
+    samples = [
+        make_sample(index=1, ts_epoch=1729000000, total_energy=7220),
+        make_sample(index=2, ts_epoch=1729000300, total_energy=7225),
+    ]
+    res = engine.evaluate_all(samples)["F01"]
+    assert res.status == "N/A"
+    assert "Verified engineering unit" in res.missing_inputs[0]
+
+
+def test_f01_single_sample_returns_na():
+    engine = SolarFormulaEngine(site_config=SiteConfig(energy_unit_verified=True))
     samples = [make_sample(index=1, ts_epoch=1729000000, total_energy=7220)]
     res = engine.evaluate_all(samples)["F01"]
     assert res.status == "N/A"
@@ -73,7 +87,8 @@ def test_f01_single_sample_returns_na():
 
 
 def test_f02_period_energy_labeled_partial_so_far():
-    engine = SolarFormulaEngine()
+    site_cfg = SiteConfig(energy_unit_verified=True, energy_unit="kWh")
+    engine = SolarFormulaEngine(site_config=site_cfg)
     samples = [
         make_sample(index=1, ts_epoch=1729000000, total_energy=100),
         make_sample(index=2, ts_epoch=1729000300, total_energy=104),
@@ -93,7 +108,12 @@ def test_f03_f04_with_and_without_site_config():
     assert "dc_capacity_kwp" in res3_na.missing_inputs
 
     # With site config: 5 kWp, 4.5 PSH -> 5 * 4.5 * 1.0 = 22.5 kWh/day
-    site_cfg = SiteConfig(dc_capacity_kwp=5.0, psh_hours_per_day=4.5)
+    site_cfg = SiteConfig(
+        dc_capacity_kwp=5.0,
+        psh_hours_per_day=4.5,
+        energy_unit_verified=True,
+        energy_unit="kWh",
+    )
     engine_configured = SolarFormulaEngine(site_config=site_cfg)
 
     samples = [
@@ -184,3 +204,24 @@ def test_unavailable_formulas_return_structured_na():
         assert res.status == "N/A"
         assert len(res.missing_inputs) > 0
         assert len(res.explanation) > 0
+
+
+def test_unverified_unit_scaling_and_status_mappings():
+    """Verifies that unverified scale factors and raw inverter status codes are preserved without guessing."""
+    engine = SolarFormulaEngine()
+    # status code 2 with 0 fault alarms
+    sample = make_sample(index=1, ts_epoch=1729000000, status_code=2, temp=38)
+    all_res = engine.evaluate_all([sample])
+
+    # Inverter status preserved as raw code 2
+    f28 = all_res["F28"]
+    assert f28.status == "CALCULATED"
+    assert f28.value["inverter_status_code"] == 2
+    assert "software status only" in f28.value["alarm_status_label"].lower()
+    assert "wiring not verified safe" in f28.value["alarm_status_label"].lower()
+
+    # Temperature preserved as raw value 38 without inventing threshold OK
+    f25 = all_res["F25"]
+    assert f25.status == "CALCULATED"
+    assert f25.value == 38
+    assert "Operating limit not verified" in f25.assumptions[0]

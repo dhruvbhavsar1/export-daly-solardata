@@ -170,4 +170,121 @@ def print_phase3_report(result: Phase3Result) -> None:
     if len(result.na_formulas) > 6:
         print(f"  ... and {len(result.na_formulas) - 6} other formulas requiring smart meter/tariffs/POA sensors.")
 
+    print("\n[UNVERIFIED FIELD CATALOG MAPPINGS]")
+    for uf in result.unverified_fields[:8]:
+        meta = FIELD_CATALOG.get(uf)
+        note = f" (Evidence needed: {meta.evidence_needed})" if meta and meta.evidence_needed else ""
+        print(f"  - {uf}: unverified unit/scale{note}")
+    if len(result.unverified_fields) > 8:
+        print(f"  ... and {len(result.unverified_fields) - 8} additional unverified fields.")
+
     print("=" * 70 + "\n")
+
+
+def parse_args() -> Any:
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Phase 3: Parse, validate, and compute solar metrics on collected MQTT telemetry."
+    )
+    parser.add_argument(
+        "--duration",
+        "-d",
+        type=int,
+        default=1200,
+        help="Collection window in seconds (default: 1200s / 20 min).",
+    )
+    parser.add_argument(
+        "--env-file",
+        "-e",
+        type=str,
+        default=None,
+        help="Path to custom .env file.",
+    )
+    parser.add_argument(
+        "--dc-capacity",
+        type=float,
+        default=None,
+        help="Site DC nameplate capacity in kWp (e.g. 5.0).",
+    )
+    parser.add_argument(
+        "--psh",
+        type=float,
+        default=None,
+        help="Peak Sun Hours (h/day) for benchmark calculations (e.g. 4.5).",
+    )
+    parser.add_argument(
+        "--tariff",
+        type=float,
+        default=None,
+        help="Electricity contract tariff in INR/kWh (e.g. 8.0).",
+    )
+    parser.add_argument(
+        "--verify-energy-unit",
+        action="store_true",
+        default=False,
+        help="Flag asserting that totalEnergy has been verified in kWh for F01/F02 calculations.",
+    )
+    parser.add_argument(
+        "--pdf",
+        action="store_true",
+        default=False,
+        help="Generate a professional client-ready PDF report.",
+    )
+    parser.add_argument(
+        "--pdf-output-dir",
+        type=str,
+        default="reports",
+        help="Directory to save generated PDF reports (default: reports/).",
+    )
+    parser.add_argument(
+        "--site-name",
+        type=str,
+        default=None,
+        help="Site or client installation name for the PDF report.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    import sys
+    from app.config import ConfigError, load_config
+    from app.collector import MQTTDataCollector
+
+    args = parse_args()
+
+    try:
+        config = load_config(env_path=args.env_file)
+    except ConfigError as err:
+        print(f"[FATAL CONFIG ERROR] {err}", file=sys.stderr)
+        return 1
+
+    site_cfg = SiteConfig(
+        dc_capacity_kwp=args.dc_capacity,
+        psh_hours_per_day=args.psh,
+        tariff_inr_per_kwh=args.tariff,
+        energy_unit_verified=args.verify_energy_unit,
+        energy_unit="kWh" if args.verify_energy_unit else "unverified_units",
+    )
+
+    collector = MQTTDataCollector(config=config, duration=args.duration)
+    collection_result = collector.collect()
+
+    engine = Phase3Engine(site_config=site_cfg)
+    phase3_res = engine.process_collection(collection_result)
+    print_phase3_report(phase3_res)
+
+    if args.pdf:
+        from app.pdf_report import SolarDailyReportGenerator
+        pdf_gen = SolarDailyReportGenerator(
+            output_dir=args.pdf_output_dir,
+            site_name=args.site_name,
+        )
+        pdf_path = pdf_gen.generate(phase3_res, site_config=site_cfg)
+        print(f"[SUCCESS] PDF report generated at: {pdf_path}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
