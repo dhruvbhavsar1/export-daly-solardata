@@ -17,6 +17,7 @@ env/
 
 # Testing and IDEs
 .pytest_cache/
+.pytest_temp/
 .coverage
 htmlcov/
 .vscode/
