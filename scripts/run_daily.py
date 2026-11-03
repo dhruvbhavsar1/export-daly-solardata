@@ -28,7 +28,7 @@ def drain(quiet_s: int, max_s: int) -> tuple[list[dict], dict]:
     host, port = os.environ["MQTT_BROKER"], int(os.environ["MQTT_PORT"])
     serial = os.environ["LOGGER_SERIAL"]
     topic = os.environ.get("MQTT_TOPIC", f"solar/{serial}")
-    cid = os.environ.get("MQTT_CLIENT_ID", f"solarpulse_gha_{serial}")
+    cid = os.environ.get("MQTT_CLIENT_ID") or f"solarpulse_gha_{serial}"
     samples, stats = [], {"msgs": 0, "bad": 0, "connected": False, "subscribed": False}
     last = [time.time()]; done = threading.Event(); lock = threading.Lock()
 
