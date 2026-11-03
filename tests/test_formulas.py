@@ -225,3 +225,136 @@ def test_unverified_unit_scaling_and_status_mappings():
     assert f25.status == "CALCULATED"
     assert f25.value == 38
     assert "Operating limit not verified" in f25.assumptions[0]
+
+
+def test_f24_night_standby_and_transport_separation():
+    """Verifies that F24 distinguishes daytime offline from nighttime standby in IST."""
+    site_cfg = SiteConfig(online_timeout_seconds=300)
+    engine = SolarFormulaEngine(site_config=site_cfg)
+
+    # 1. Daytime test: UTC 06:00 is IST 11:30 (Daylight)
+    t_day_sample = datetime.datetime(2026, 10, 21, 6, 0, 0, tzinfo=datetime.timezone.utc)
+    sample_day = make_sample(index=1, ts_epoch=t_day_sample.timestamp())
+
+    # Heartbeat age = 1000s > 300s timeout during day -> OFFLINE
+    now_day_offline = t_day_sample + datetime.timedelta(seconds=1000)
+    res_day = engine.evaluate_all([sample_day], reference_time=now_day_offline)["F24"]
+    assert res_day.status == "CALCULATED"
+    assert "OFFLINE" in str(res_day.value)
+    assert res_day.inputs_used["logger_status"] == "OFFLINE"
+    assert res_day.inputs_used["transport_status"] == "CONNECTED_WITH_SAMPLES"
+    assert res_day.inputs_used["is_online"] is False
+
+    # 2. Nighttime test: UTC 15:00 is IST 20:30 (Night in India, inverters asleep)
+    t_night_sample = datetime.datetime(2026, 10, 21, 15, 0, 0, tzinfo=datetime.timezone.utc)
+    sample_night = make_sample(index=2, ts_epoch=t_night_sample.timestamp())
+
+    # Heartbeat age = 1000s > 300s timeout during night -> NIGHT_STANDBY
+    now_night = t_night_sample + datetime.timedelta(seconds=1000)
+    res_night = engine.evaluate_all([sample_night], reference_time=now_night)["F24"]
+    assert res_night.status == "CALCULATED"
+    assert "NIGHT_STANDBY" in str(res_night.value)
+    assert res_night.inputs_used["logger_status"] == "NIGHT_STANDBY"
+    assert res_night.inputs_used["is_night_in_ist"] is True
+
+
+def test_f25_zero_temperature_recognized_as_unpopulated_sensor():
+    """Verifies that constant 0 inverter temperature is flagged as unpopulated, not 0°C normal ambient."""
+    engine = SolarFormulaEngine()
+    sample_zero = make_sample(index=1, ts_epoch=1729000000, temp=0)
+    res = engine.evaluate_all([sample_zero])["F25"]
+
+    assert res.status == "N/A"
+    assert res.value == 0
+    assert "unpopulated, unconfigured, or inactive" in res.explanation.lower()
+    assert "not genuine 0°c" in res.assumptions[0].lower()
+
+
+def test_f28_neutral_ground_and_hardware_alarm_detection():
+    """Verifies discrete hardware alarm registers are detected (e.g. NG=1) and wiring safety disclaimer retained."""
+    engine = SolarFormulaEngine()
+
+    # Case A: Sample with NG=1 (Neutral-Ground Fault detected in observed live payloads)
+    sample_alarm = make_sample(index=1, ts_epoch=1729000000, status_code=2)
+    sample_alarm.telemetry.scalars["alarm_neutral_ground"] = 1
+    sample_alarm.telemetry.scalars["alarm_grid_over_voltage"] = 0
+
+    res_alarm = engine.evaluate_all([sample_alarm])["F28"]
+    assert res_alarm.status == "CALCULATED"
+    assert "ALARM ACTIVE" in res_alarm.value["alarm_status_label"]
+    assert any("Neutral-Ground Fault (NG=1)" in a for a in res_alarm.value["active_alarms"])
+    assert "wiring not verified safe" in res_alarm.value["alarm_status_label"].lower()
+
+    # Case B: Sample with all discrete alarms = 0
+    sample_normal = make_sample(index=2, ts_epoch=1729000300, status_code=0)
+    sample_normal.telemetry.scalars["alarm_neutral_ground"] = 0
+    sample_normal.telemetry.scalars["alarm_ground_fault_circuit_interrupt"] = 0
+    sample_normal.telemetry.scalars["alarm_grid_over_voltage"] = 0
+
+    res_normal = engine.evaluate_all([sample_normal])["F28"]
+    assert res_normal.status == "CALCULATED"
+    assert len(res_normal.value["active_alarms"]) == 0
+    assert "0 active alarms detected" in res_normal.value["alarm_status_label"]
+    assert "wiring not verified safe" in res_normal.value["alarm_status_label"].lower()
+
+
+def test_f29_stale_burst_data_decoupled_from_coverage():
+    """
+    Verifies that a historical burst with 100% cadence density is flagged as STALE/HISTORICAL_BURST
+    and does not mislead callers into assuming telemetry is current.
+    """
+    engine = SolarFormulaEngine(SiteConfig(expected_cadence_seconds=300))
+    t0 = datetime.datetime(2026, 10, 10, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    samples = [
+        make_sample(index=1, ts_epoch=t0.timestamp()),
+        make_sample(index=2, ts_epoch=(t0 + datetime.timedelta(seconds=300)).timestamp()),
+    ]
+
+    # Evaluated 3 days later (stale historical burst)
+    now_3_days_later = t0 + datetime.timedelta(days=3)
+    res = engine.evaluate_all(samples, reference_time=now_3_days_later)["F29"]
+
+    assert res.status == "CALCULATED"
+    assert res.value["is_stale"] is True
+    assert res.value["freshness_status"] == "HISTORICAL_BURST"
+    assert res.value["freshness_seconds"] > 200000
+    # Cadence within the packet span itself is 100%, but labeled clearly as span density
+    assert res.value["sample_span_coverage_pct"] == 100.0
+    assert "Freshness: HISTORICAL_BURST" in res.explanation
+
+
+def test_f23_headline_generation_with_and_without_samples():
+    """Verifies that F23 produces an executive summary headline when data is present."""
+    engine = SolarFormulaEngine(SiteConfig(energy_unit_verified=True, energy_unit="kWh", tariff_inr_per_kwh=7.5))
+
+    # 1. No samples -> structured N/A
+    res_empty = engine.evaluate_all([])["F23"]
+    assert res_empty.status == "N/A"
+    assert "Telemetry samples in reporting period" in res_empty.missing_inputs
+
+    # 2. With samples and verified energy -> CALCULATED headline
+    samples = [
+        make_sample(index=1, ts_epoch=1729000000, total_energy=100),
+        make_sample(index=2, ts_epoch=1729000300, total_energy=110),
+    ]
+    res = engine.evaluate_all(samples, reference_time=datetime.datetime.fromtimestamp(1729000310, tz=datetime.timezone.utc))["F23"]
+    assert res.status == "CALCULATED"
+    assert "Solar plant generated 10.0 kWh" in res.value
+    assert "₹75.00" in res.value
+    assert "System status:" in res.value
+
+
+def test_site_config_from_env(monkeypatch):
+    """Verifies that SiteConfig loads configuration safely from environment variables."""
+    monkeypatch.setenv("DC_CAPACITY_KWP", "4.5")
+    monkeypatch.setenv("PSH_HOURS_PER_DAY", "4.8")
+    monkeypatch.setenv("TARIFF_INR_PER_KWH", "8.25")
+    monkeypatch.setenv("ENERGY_UNIT_VERIFIED", "true")
+    monkeypatch.setenv("ONLINE_TIMEOUT_SECONDS", "600")
+
+    cfg = SiteConfig.from_env()
+    assert cfg.dc_capacity_kwp == 4.5
+    assert cfg.psh_hours_per_day == 4.8
+    assert cfg.tariff_inr_per_kwh == 8.25
+    assert cfg.energy_unit_verified is True
+    assert cfg.online_timeout_seconds == 600

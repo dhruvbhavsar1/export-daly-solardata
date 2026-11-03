@@ -1,0 +1,64 @@
+name: Daily solar report
+on:
+  schedule:
+    - cron: "15 13 * * *"      # 13:15 UTC = 18:45 IST (after the 18:00 window; broker queue keeps data, so a late start loses nothing)
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "IST date to report (YYYY-MM-DD). Empty = today"
+        required: false
+permissions:
+  contents: write                # to save data/raw back to the (PRIVATE) repo
+concurrency: { group: solar-report, cancel-in-progress: false }   # never two MQTT clients with one id
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MQTT_BROKER:   ${{ secrets.MQTT_BROKER }}
+      MQTT_PORT:     ${{ secrets.MQTT_PORT }}
+      MQTT_USERNAME: ${{ secrets.MQTT_USERNAME }}
+      MQTT_PASSWORD: ${{ secrets.MQTT_PASSWORD }}
+      LOGGER_SERIAL: ${{ secrets.LOGGER_SERIAL }}
+      MQTT_USE_TLS:  ${{ vars.MQTT_USE_TLS || 'false' }}
+      MQTT_CLIENT_ID: ${{ vars.MQTT_CLIENT_ID || '' }}
+      CLIENT_NAME:   ${{ vars.CLIENT_NAME }}
+      PLANT_ADDRESS: ${{ vars.PLANT_ADDRESS }}
+      PLANT_ID:      ${{ vars.PLANT_ID }}
+      INVERTER:      ${{ vars.INVERTER }}
+      PLANT_KWP:     ${{ vars.PLANT_KWP }}
+      TARIFF_INR:    ${{ vars.TARIFF_INR || '7' }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM }}
+      MAIL_TO:   ${{ secrets.MAIL_TO }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install paho-mqtt python-dotenv playwright && python -m playwright install --with-deps chromium
+      - name: Collect + build report
+        id: build
+        run: |
+          D="${{ github.event.inputs.date }}"
+          python scripts/run_daily.py ${D:+--date $D}
+          F=$(ls -t out/solar_report_*.html | head -1)
+          echo "html=$F" >> "$GITHUB_OUTPUT"
+      - name: PDF copy
+        run: |
+          H="${{ steps.build.outputs.html }}"
+          python scripts/html_to_pdf.py "$H" "${H%.html}.pdf"
+      - name: Send email
+        run: |
+          H="${{ steps.build.outputs.html }}"; P="${H%.html}.pdf"
+          python scripts/send_email.py "$H" "$P"
+      - name: Save data (private repo)
+        if: always()
+        run: |
+          git config user.name "solar-bot"; git config user.email "solar-bot@users.noreply.github.com"
+          git add data/raw && (git diff --cached --quiet || git commit -m "data $(date -u +%F)") && git push || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: report, path: out/, retention-days: 30 }

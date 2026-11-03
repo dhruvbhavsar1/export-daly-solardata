@@ -9,7 +9,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
-
+raw_mqtt_data.txt
+out/
 # Virtual environments
 venv/
 .venv/

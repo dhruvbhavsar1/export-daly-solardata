@@ -30,6 +30,60 @@ class SiteConfig:
     energy_unit_verified: bool = False
     energy_unit: str = "kWh"
     energy_scale_factor: float = 1.0
+    site_name: Optional[str] = None
+
+    @classmethod
+    def from_env(cls, env_path: Optional[Any] = None) -> SiteConfig:
+        """Loads optional site configuration and engineering parameters from environment."""
+        import os
+        from dotenv import load_dotenv
+
+        if env_path:
+            load_dotenv(dotenv_path=env_path, override=False)
+        else:
+            load_dotenv(override=False)
+
+        def _get_float(name: str) -> Optional[float]:
+            val = os.getenv(name)
+            if val is not None and val.strip():
+                try:
+                    return float(val.strip())
+                except ValueError:
+                    return None
+            return None
+
+        def _get_int(name: str) -> Optional[int]:
+            val = os.getenv(name)
+            if val is not None and val.strip():
+                try:
+                    return int(val.strip())
+                except ValueError:
+                    return None
+            return None
+
+        def _get_bool(name: str, default: bool = False) -> bool:
+            val = os.getenv(name)
+            if val is not None and val.strip():
+                return val.strip().lower() in ("true", "1", "yes")
+            return default
+
+        return cls(
+            dc_capacity_kwp=_get_float("DC_CAPACITY_KWP"),
+            psh_hours_per_day=_get_float("PSH_HOURS_PER_DAY"),
+            benchmark_factor=_get_float("BENCHMARK_FACTOR") or 1.0,
+            tariff_inr_per_kwh=_get_float("TARIFF_INR_PER_KWH"),
+            capex_inr=_get_float("CAPEX_INR"),
+            annual_om_cost_inr=_get_float("ANNUAL_OM_COST_INR"),
+            grid_emission_factor_kg_per_kwh=_get_float("GRID_EMISSION_FACTOR_KG_PER_KWH"),
+            tree_co2_kg_per_tree_year=_get_float("TREE_CO2_KG_PER_TREE_YEAR"),
+            expected_cadence_seconds=_get_int("EXPECTED_CADENCE_SECONDS"),
+            timezone_name=os.getenv("TIMEZONE_NAME", "Asia/Kolkata").strip(),
+            online_timeout_seconds=_get_int("ONLINE_TIMEOUT_SECONDS") or 900,
+            energy_unit_verified=_get_bool("ENERGY_UNIT_VERIFIED", False),
+            energy_unit=os.getenv("ENERGY_UNIT", "kWh").strip(),
+            energy_scale_factor=_get_float("ENERGY_SCALE_FACTOR") or 1.0,
+            site_name=os.getenv("SITE_NAME"),
+        )
 
 
 @dataclass
@@ -146,9 +200,6 @@ class SolarFormulaEngine:
         # F22: Tree equivalent
         results["F22"] = self._eval_f22(results["F21"])
 
-        # F23: Monthly PDF headline
-        results["F23"] = self._eval_f23()
-
         # F24: Online / offline status
         results["F24"] = self._eval_f24(samples, now_dt)
 
@@ -169,6 +220,15 @@ class SolarFormulaEngine:
 
         # F30: Weather-based low-output detection
         results["F30"] = self._eval_f30()
+
+        # F23: Monthly / Period PDF headline
+        results["F23"] = self._eval_f23(
+            results["F02"],
+            results["F17"],
+            results["F24"],
+            results["F29"],
+            usable_samples,
+        )
 
         return results
 
@@ -645,19 +705,74 @@ class SolarFormulaEngine:
             assumptions=["Illustrative communication-only metric with explicitly declared tree factor."],
         )
 
-    def _eval_f23(self) -> FormulaResult:
+    def _eval_f23(
+        self,
+        f02: FormulaResult,
+        f17: FormulaResult,
+        f24: FormulaResult,
+        f29: FormulaResult,
+        usable_samples: list[ValidatedSample],
+    ) -> FormulaResult:
+        """
+        F23: Monthly / Period PDF headline summary.
+        Automated client-facing executive headline summarizing generation performance,
+        gross economic value, and operational status.
+        """
+        if not usable_samples:
+            return FormulaResult(
+                formula_id="F23",
+                name="Monthly PDF headline",
+                status="N/A",
+                value=None,
+                unit=None,
+                missing_inputs=["Telemetry samples in reporting period"],
+                explanation="No telemetry samples available to generate headline summary.",
+            )
+
+        f24_val = str(f24.value) if f24 and f24.value else "UNKNOWN"
+        f29_dict = f29.value if (f29 and isinstance(f29.value, dict)) else {}
+        fresh_status = f29_dict.get("freshness_status", "UNKNOWN")
+
+        if f02.status in ("CALCULATED", "PARTIAL") and f02.value is not None:
+            gen_part = f"Solar plant generated {f02.value} {f02.unit} (partial collection window)"
+            val_part = (
+                f"with estimated gross generation value of ₹{f17.value:,.2f}"
+                if (f17.status == "CALCULATED" and f17.value is not None)
+                else "with unconfigured contract tariff"
+            )
+            headline = f"{gen_part} {val_part}. System status: {f24_val}. Telemetry freshness: {fresh_status}."
+            status = "CALCULATED"
+        else:
+            headline = (
+                f"Solar telemetry monitoring active ({len(usable_samples)} valid packet(s) captured). "
+                f"System status: {f24_val}. Telemetry freshness: {fresh_status}. "
+                "Energy units unverified (generation metrics pending vendor confirmation)."
+            )
+            status = "PARTIAL"
+
         return FormulaResult(
             formula_id="F23",
             name="Monthly PDF headline",
-            status="N/A",
-            value=None,
+            status=status,
+            value=headline,
             unit=None,
-            missing_inputs=["Phase 4 reporting pipeline and full monthly billing cycle"],
-            explanation="Monthly headline is generated in Phase 4 reporting.",
+            inputs_used={
+                "f02_status": f02.status,
+                "f17_status": f17.status,
+                "f24_status": f24_val,
+                "freshness_status": fresh_status,
+                "usable_samples": len(usable_samples),
+            },
+            explanation="Synthesized automated executive summary for client reporting.",
         )
 
     def _eval_f24(self, samples: list[ValidatedSample], now_dt: datetime.datetime) -> FormulaResult:
-        """F24: Online / offline status."""
+        """
+        F24: Online / offline status.
+        Clearly distinguishes successful MQTT collection from physical logger online/offline state.
+        Evaluates hardware transmission timestamp against configured timeout and checks
+        local solar day/night hours (IST 18:30 - 06:00) for normal inverter standby.
+        """
         cfg = self.site_config
         if not samples:
             return FormulaResult(
@@ -666,16 +781,35 @@ class SolarFormulaEngine:
                 status="CALCULATED",
                 value="OFFLINE (NO_SAMPLES)",
                 unit="status",
-                inputs_used={"sample_count": 0},
-                explanation="No telemetry samples received.",
+                inputs_used={
+                    "sample_count": 0,
+                    "logger_status": "OFFLINE",
+                    "transport_status": "NO_SAMPLES",
+                    "is_online": False,
+                },
+                explanation="No telemetry samples received in collection window.",
             )
 
         latest_sample = samples[-1]
         ts = latest_sample.timestamp_utc or latest_sample.telemetry.received_at_utc
-        elapsed_sec = (now_dt - ts).total_seconds()
+        elapsed_sec = max(0.0, (now_dt - ts).total_seconds())
         is_online = elapsed_sec <= cfg.online_timeout_seconds
 
-        status_val = "ONLINE" if is_online else f"OFFLINE (Heartbeat age: {int(elapsed_sec)}s > {cfg.online_timeout_seconds}s)"
+        # Solar night evaluation in IST (UTC+05:30)
+        # Solar PV string generation is zero at night (18:30 to 06:00 IST) when inverters shut down.
+        ist_now = now_dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+        ist_hour = ist_now.hour + ist_now.minute / 60.0
+        is_night = ist_hour < 6.0 or ist_hour >= 18.5
+
+        if is_online:
+            status_val = "ONLINE"
+            logger_state = "ONLINE"
+        elif is_night:
+            status_val = f"NIGHT_STANDBY (Normal night shutdown; last heartbeat: {int(elapsed_sec)}s ago)"
+            logger_state = "NIGHT_STANDBY"
+        else:
+            status_val = f"OFFLINE (Heartbeat age: {int(elapsed_sec)}s > {cfg.online_timeout_seconds}s)"
+            logger_state = "OFFLINE"
 
         return FormulaResult(
             formula_id="F24",
@@ -683,12 +817,29 @@ class SolarFormulaEngine:
             status="CALCULATED",
             value=status_val,
             unit="status",
-            inputs_used={"last_heartbeat_utc": ts.isoformat(), "elapsed_seconds": round(elapsed_sec, 1)},
-            explanation=f"Evaluated against configured timeout of {cfg.online_timeout_seconds}s.",
+            inputs_used={
+                "logger_status": logger_state,
+                "transport_status": "CONNECTED_WITH_SAMPLES",
+                "is_online": is_online,
+                "is_night_in_ist": is_night,
+                "last_heartbeat_utc": ts.isoformat(),
+                "elapsed_seconds": round(elapsed_sec, 1),
+            },
+            explanation=(
+                f"Evaluated against configured timeout of {cfg.online_timeout_seconds}s. "
+                f"Heartbeat age: {round(elapsed_sec, 1)}s. "
+                + ("Device is in normal solar night standby (IST 18:30 - 06:00)." if (not is_online and is_night) else
+                   "Hardware transmission within active timeout." if is_online else
+                   "Hardware transmission exceeded timeout during daytime hours.")
+            ),
         )
 
     def _eval_f25(self, usable_samples: list[ValidatedSample]) -> FormulaResult:
-        """F25: Inverter temperature."""
+        """
+        F25: Inverter temperature.
+        Guarantees that constant 0 reading is recognized as an unpopulated/unconfigured sensor,
+        preventing false 0°C normal temperature interpretation.
+        """
         if not usable_samples:
             return FormulaResult(
                 formula_id="F25",
@@ -710,6 +861,23 @@ class SolarFormulaEngine:
                 unit="unverified_temp_scale",
                 missing_inputs=["inverterTemperature field in latest sample"],
                 explanation="Field inverterTemperature missing in telemetry payload.",
+            )
+
+        # Detect unpopulated / unconfigured sensor reading constant 0
+        if raw_temp == 0:
+            return FormulaResult(
+                formula_id="F25",
+                name="Inverter temperature",
+                status="N/A",
+                value=0,
+                unit="unverified_temp_scale",
+                missing_inputs=["Active/populated temperature sensor feed"],
+                explanation=(
+                    "Telemetry reports inverterTemperature as constant 0. "
+                    "Indicates an unpopulated, unconfigured, or inactive temperature sensor register on this inverter model. "
+                    "Suppressed from engineering status to prevent misleading 0°C reading."
+                ),
+                assumptions=["Zero value is an unconfigured register indicator, not genuine 0°C operating temperature."],
             )
 
         return FormulaResult(
@@ -746,7 +914,11 @@ class SolarFormulaEngine:
         )
 
     def _eval_f28(self, usable_samples: list[ValidatedSample]) -> FormulaResult:
-        """F28: Faults / wiring / grid status."""
+        """
+        F28: Faults / wiring / grid status.
+        Inspects discrete hardware alarm registers (NG, GFCI, GF, HT, GOV, GUV, GOF, GUF,
+        DOC, DOV, DUC, DUV, DBOV, DBUV, DIF, PU, GRC, DBU) and raw inverterStatus state code.
+        """
         if not usable_samples:
             return FormulaResult(
                 formula_id="F28",
@@ -760,20 +932,78 @@ class SolarFormulaEngine:
         latest = usable_samples[-1]
         raw_status = latest.telemetry.get_scalar("inverter_status_raw")
 
+        # Scan discrete hardware alarm registers
+        alarm_fields = [
+            ("NG", "alarm_neutral_ground", "Neutral-Ground Fault"),
+            ("GFCI", "alarm_ground_fault_circuit_interrupt", "Ground Fault Circuit Interrupt"),
+            ("GF", "alarm_ground_fault", "Ground Fault"),
+            ("HT", "alarm_high_temperature", "High Temperature"),
+            ("GOV", "alarm_grid_over_voltage", "Grid Over Voltage"),
+            ("GUV", "alarm_grid_under_voltage", "Grid Under Voltage"),
+            ("GOF", "alarm_grid_over_frequency", "Grid Over Frequency"),
+            ("GUF", "alarm_grid_under_frequency", "Grid Under Frequency"),
+            ("DOC", "alarm_dc_over_current", "DC Over Current"),
+            ("DOV", "alarm_dc_over_voltage", "DC Over Voltage"),
+            ("DUC", "alarm_dc_under_current", "DC Under Current"),
+            ("DUV", "alarm_dc_under_voltage", "DC Under Voltage"),
+            ("DBOV", "alarm_dc_boost_over_voltage", "Boost Over Voltage"),
+            ("DBUV", "alarm_dc_boost_under_voltage", "Boost Under Voltage"),
+            ("DIF", "alarm_dc_isolation_fault", "DC Isolation Fault"),
+            ("PU", "alarm_phase_unbalance", "Phase Unbalance"),
+            ("GRC", "alarm_grid_relay_check", "Grid Relay Check"),
+            ("DBU", "alarm_dc_boost_unbalance", "Boost Unbalance"),
+        ]
+
+        active_alarms: list[str] = []
+        evaluated_alarm_count = 0
+
+        for raw_name, norm_name, desc in alarm_fields:
+            val = latest.telemetry.get_scalar(norm_name)
+            if val is not None:
+                evaluated_alarm_count += 1
+                try:
+                    if int(val) == 1:
+                        active_alarms.append(f"{desc} ({raw_name}=1)")
+                except (ValueError, TypeError):
+                    pass
+
+        if active_alarms:
+            alarm_label = (
+                f"ALARM ACTIVE: {', '.join(active_alarms)} "
+                "(software status only; wiring not verified safe)"
+            )
+        elif evaluated_alarm_count > 0:
+            alarm_label = (
+                f"0 active alarms detected across {evaluated_alarm_count} hardware registers "
+                "(software status only; wiring not verified safe)"
+            )
+        else:
+            alarm_label = (
+                f"Inverter state code {raw_status} "
+                "(software status only; wiring not verified safe)"
+            )
+
         return FormulaResult(
             formula_id="F28",
             name="Faults / wiring / grid status",
             status="CALCULATED",
             value={
                 "inverter_status_code": raw_status,
-                "alarm_status_label": "No detected wiring alarm (software status only; wiring not verified safe)",
+                "alarm_status_label": alarm_label,
+                "active_alarms": active_alarms,
+                "evaluated_alarm_registers": evaluated_alarm_count,
             },
             unit="state_code",
-            inputs_used={"inverterStatus": raw_status},
+            inputs_used={
+                "inverterStatus": raw_status,
+                "evaluated_alarms": evaluated_alarm_count,
+                "active_alarms": active_alarms,
+            },
             explanation=(
-                "Reports raw inverterStatus state code. Software telemetry alone cannot certify wiring safety."
+                f"Evaluated {evaluated_alarm_count} discrete alarm registers and inverter status code {raw_status}. "
+                "Software telemetry alone cannot certify electrical wiring safety or fire compliance."
             ),
-            assumptions=["Raw status code mapping requires manufacturer documentation."],
+            assumptions=["Software registers reflect inverter internal logic; physical wiring requires professional inspection."],
         )
 
     def _eval_f29(self, samples: list[ValidatedSample], now_dt: datetime.datetime) -> FormulaResult:
@@ -781,13 +1011,22 @@ class SolarFormulaEngine:
         F29: Data coverage and freshness.
         Freshness = now - newest_sample_time.
         Coverage = valid / expected * 100 if cadence configured.
+        Explicitly decouples freshness lag from packet cadence density to prevent
+        falsely reporting 100% coverage on stale or historical bursts.
         """
         if not samples:
             return FormulaResult(
                 formula_id="F29",
                 name="Data coverage and freshness",
                 status="CALCULATED",
-                value={"coverage_pct": 0.0, "freshness_seconds": None, "message_count": 0},
+                value={
+                    "coverage_pct": 0.0,
+                    "freshness_seconds": None,
+                    "freshness_status": "NO_DATA",
+                    "is_stale": True,
+                    "message_count": 0,
+                    "valid_count": 0,
+                },
                 unit=None,
                 inputs_used={"sample_count": 0},
                 explanation="No telemetry received in collection window.",
@@ -799,6 +1038,15 @@ class SolarFormulaEngine:
         freshness_sec = max(0.0, (now_dt - latest_ts).total_seconds())
 
         cfg = self.site_config
+        is_stale = freshness_sec > cfg.online_timeout_seconds
+
+        if freshness_sec <= cfg.online_timeout_seconds:
+            freshness_status = "FRESH"
+        elif freshness_sec <= 86400:
+            freshness_status = "STALE"
+        else:
+            freshness_status = "HISTORICAL_BURST"
+
         if cfg.expected_cadence_seconds and cfg.expected_cadence_seconds > 0:
             first_ts = samples[0].timestamp_utc or samples[0].telemetry.received_at_utc
             time_span_sec = max(1.0, (latest_ts - first_ts).total_seconds())
@@ -818,7 +1066,10 @@ class SolarFormulaEngine:
             status="CALCULATED",
             value={
                 "freshness_seconds": round(freshness_sec, 1),
+                "freshness_status": freshness_status,
+                "is_stale": is_stale,
                 "coverage_pct": cov_val,
+                "sample_span_coverage_pct": cov_val,
                 "message_count": len(samples),
                 "valid_count": valid_count,
                 "observed_time_span_seconds": round(observed_span, 1),
@@ -828,10 +1079,12 @@ class SolarFormulaEngine:
                 "samples": len(samples),
                 "valid": valid_count,
                 "cadence_configured": cfg.expected_cadence_seconds is not None,
+                "freshness_status": freshness_status,
+                "heartbeat_lag_seconds": round(freshness_sec, 1),
             },
             explanation=(
-                f"Freshness: {round(freshness_sec, 1)}s. "
-                + (f"Coverage: {cov_val}% (based on {cfg.expected_cadence_seconds}s cadence)."
+                f"Freshness: {freshness_status} (Lag: {round(freshness_sec, 1)}s vs {cfg.online_timeout_seconds}s timeout). "
+                + (f"Observed packet span density: {cov_val}% (based on {cfg.expected_cadence_seconds}s cadence across {round(observed_span, 1)}s span)."
                    if cov_val is not None else
                    "Cadence unknown; reporting message count and observed time span without fabricating percentage.")
             ),

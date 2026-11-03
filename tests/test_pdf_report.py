@@ -245,3 +245,47 @@ def test_f01_counter_reset_regression_exclusion():
     assert intervals[1]["counter_reset"] is True
     assert "Counter drop detected" in intervals[1]["warning"]
     assert "excluded from accumulation" in res.explanation
+
+
+def test_time_series_chart_handles_gap_breaks():
+    """Verifies that large gaps (>15 min) between readings are broken with NaNs without crashing."""
+    dt1 = datetime.datetime(2026, 10, 21, 10, 0, 0, tzinfo=datetime.timezone.utc)
+    # Gap of 2 hours (> 900 seconds)
+    dt2 = datetime.datetime(2026, 10, 21, 12, 0, 0, tzinfo=datetime.timezone.utc)
+
+    def make_p_stub(idx, dt, power):
+        t = NormalizedTelemetry(
+            message_index=idx,
+            topic="solar/test",
+            raw_bytes=b"{}",
+            received_at_utc=dt,
+            telemetry_timestamp_raw=dt.timestamp(),
+        )
+        t.scalars["active_power_raw"] = power
+        return ValidatedSample(telemetry=t, is_usable=True, timestamp_utc=dt)
+
+    samples = [
+        make_p_stub(1, dt1, 1500),
+        make_p_stub(2, dt2, 2200),
+    ]
+
+    chart_buf = generate_active_power_chart(samples)
+    assert chart_buf is not None
+    assert len(chart_buf.getvalue()) > 1000
+
+
+def test_pdf_report_displays_alarm_and_freshness_status(tmp_path: Path):
+    """Verifies that active alarms and stale freshness are formatted properly in PDF generation."""
+    collection = create_mock_collection_result(num_samples=3)
+    engine = Phase3Engine()
+    # Reference time 4 days later -> data is stale
+    ref_time = datetime.datetime(2026, 10, 25, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    phase3_res = engine.process_collection(collection, reference_time=ref_time)
+
+    # Inject an active alarm
+    phase3_res.formula_results["F28"].value["active_alarms"] = ["Neutral-Ground Fault (NG=1)"]
+
+    generator = SolarDailyReportGenerator(output_dir=tmp_path)
+    pdf_path = generator.generate(phase3_res)
+    assert pdf_path.exists()
+    assert pdf_path.stat().st_size > 5000

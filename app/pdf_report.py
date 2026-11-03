@@ -139,16 +139,29 @@ def generate_active_power_chart(
 
     # Sort chronologically
     valid_points.sort(key=lambda p: p[0])
-    times = [p[0] for p in valid_points]
-    values = [p[1] for p in valid_points]
+
+    # Detect time gaps between points (e.g. > 900s or 15m)
+    # and insert float('nan') so matplotlib does not connect gaps with false straight lines
+    plottable_times: list[datetime.datetime] = []
+    plottable_values: list[float] = []
+
+    for idx, (pt_time, pt_val) in enumerate(valid_points):
+        if idx > 0:
+            gap_sec = (pt_time - valid_points[idx - 1][0]).total_seconds()
+            if gap_sec > 900:  # Gap > 15 minutes
+                mid_time = valid_points[idx - 1][0] + datetime.timedelta(seconds=gap_sec / 2)
+                plottable_times.append(mid_time)
+                plottable_values.append(float("nan"))
+        plottable_times.append(pt_time)
+        plottable_values.append(pt_val)
 
     fig, ax = plt.subplots(figsize=(width_inches, height_inches), dpi=150)
     fig.patch.set_facecolor("#ffffff")
     ax.set_facecolor("#f8fafc")
 
     ax.plot(
-        times,
-        values,
+        plottable_times,
+        plottable_values,
         color="#0284c7",
         linewidth=1.8,
         marker="o",
@@ -159,9 +172,13 @@ def generate_active_power_chart(
 
     ax.set_title("Active Power Telemetry (Observed Collection Window)", fontsize=9, fontweight="bold", color="#1e293b", pad=8)
     ax.set_xlabel("Time (Asia/Kolkata IST)", fontsize=7.5, color="#475569")
-    ax.set_ylabel("Reported Value (Unverified Scale)", fontsize=7.5, color="#475569")
+    ax.set_ylabel("Reported Active Power (W, raw telemetry)", fontsize=7.5, color="#475569")
 
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S", tz=IST_TZ))
+    total_span_hours = (valid_points[-1][0] - valid_points[0][0]).total_seconds() / 3600.0
+    if total_span_hours > 24:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M", tz=IST_TZ))
+    else:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S", tz=IST_TZ))
     fig.autofmt_xdate(rotation=0, ha="center")
 
     ax.grid(True, linestyle="--", alpha=0.5, color="#cbd5e1")
@@ -460,25 +477,41 @@ class SolarDailyReportGenerator:
         online_status = f24.value if f24 and f24.value else "UNKNOWN"
         f01 = result.formula_results.get("F01")
         f02 = result.formula_results.get("F02")
+        f23 = result.formula_results.get("F23")
         f25 = result.formula_results.get("F25")
         f28 = result.formula_results.get("F28")
+        f29 = result.formula_results.get("F29")
+
+        f29_dict = f29.value if (f29 and isinstance(f29.value, dict)) else {}
+        freshness_status = f29_dict.get("freshness_status", "UNKNOWN")
+        fresh_sec = f29_dict.get("freshness_seconds")
+        fresh_lag = f"{fresh_sec:,.0f}s ({fresh_sec/3600:.1f}h) ago" if fresh_sec is not None else "N/A"
 
         summary_p1 = (
             f"During the captured collection window, <b>{result.valid_samples}</b> valid telemetry packet(s) were received "
             f"out of <b>{result.total_messages}</b> total messages. System connectivity state is evaluated as "
-            f"<b>{online_status}</b> based on telemetry freshness."
+            f"<b>{online_status}</b>. Telemetry freshness status: <b>{freshness_status}</b> (last heartbeat {fresh_lag})."
         )
         story.append(Paragraph(summary_p1, styles["Body"]))
         story.append(Spacer(1, 4))
 
+        if f23 and f23.value:
+            story.append(Paragraph(f"<b>Executive Summary Headline (F23):</b> {f23.value}", styles["Body"]))
+            story.append(Spacer(1, 4))
+
         # Metrics status box
         f01_val = f"{f01.value} {f01.unit}" if (f01 and f01.status == "CALCULATED" and f01.value is not None) else "N/A (Units Unverified)"
         f02_val = f"{f02.value} {f02.unit} (Partial)" if (f02 and f02.status == "PARTIAL" and f02.value is not None) else "N/A"
-        temp_val = f"{f25.value} (raw)" if (f25 and f25.status == "CALCULATED" and f25.value is not None) else "N/A"
+        temp_val = f"{f25.value} (raw)" if (f25 and f25.status == "CALCULATED" and f25.value is not None) else "N/A (Unpopulated Sensor)"
 
-        alarm_label = "None detected (software state only)"
+        alarm_label = "0 Active Alarms (Software Only)"
         if f28 and isinstance(f28.value, dict):
-            alarm_label = f"Code {f28.value.get('inverter_status_code')} (Software Status Only)"
+            active_alarms = f28.value.get("active_alarms", [])
+            code = f28.value.get("inverter_status_code")
+            if active_alarms:
+                alarm_label = f"ALARM ACTIVE: {', '.join(active_alarms)}"
+            else:
+                alarm_label = f"0 Alarms (Code {code}, Software Only)"
 
         summary_cards = [
             [
@@ -491,7 +524,7 @@ class SolarDailyReportGenerator:
                 Paragraph(f"<b>{f01_val}</b>", styles["CellTextBold"]),
                 Paragraph(f"<b>{f02_val}</b>", styles["CellTextBold"]),
                 Paragraph(f"<b>{temp_val}</b>", styles["CellTextBold"]),
-                Paragraph(f"<b>{alarm_label}</b>", styles["CellText"]),
+                Paragraph(f"<b>{alarm_label}</b>", styles["WarningText"] if "ALARM ACTIVE" in alarm_label else styles["CellText"]),
             ],
         ]
 
@@ -541,7 +574,7 @@ class SolarDailyReportGenerator:
         priority_fids = [
             "F01", "F02", "F03", "F04", "F05", "F06", "F07",
             "F11", "F12", "F13", "F14", "F16", "F17", "F21", "F22",
-            "F24", "F25", "F28", "F29", "F30"
+            "F23", "F24", "F25", "F28", "F29", "F30"
         ]
 
         for fid in priority_fids:
@@ -559,7 +592,39 @@ class SolarDailyReportGenerator:
 
             val_str = "N/A"
             if f.value is not None:
-                if isinstance(f.value, float):
+                if fid == "F29" and isinstance(f.value, dict):
+                    cov = f.value.get("coverage_pct")
+                    f_stat = f.value.get("freshness_status", "")
+                    if cov is not None:
+                        val_str = f"{cov:,.1f}% ({f_stat})"
+                    else:
+                        val_str = str(f_stat) or "N/A"
+                elif fid == "F28" and isinstance(f.value, dict):
+                    alarms = f.value.get("active_alarms", [])
+                    code = f.value.get("inverter_status_code")
+                    if alarms:
+                        val_str = f"ALARM ({len(alarms)} active)"
+                        status_style = styles["WarningText"]
+                    else:
+                        val_str = f"Normal (Code {code})"
+                elif fid == "F24":
+                    raw_s = str(f.value)
+                    if "NIGHT_STANDBY" in raw_s:
+                        val_str = "NIGHT_STANDBY"
+                    elif "OFFLINE" in raw_s:
+                        val_str = "OFFLINE"
+                    elif "ONLINE" in raw_s:
+                        val_str = "ONLINE"
+                    else:
+                        val_str = raw_s[:15]
+                elif fid == "F25":
+                    if f.status == "N/A":
+                        val_str = "N/A (Unpopulated)"
+                    else:
+                        val_str = f"{f.value}"
+                elif fid == "F23":
+                    val_str = "Summary Generated" if f.status in ("CALCULATED", "PARTIAL") else "N/A"
+                elif isinstance(f.value, float):
                     val_str = f"{f.value:,.2f}"
                 elif isinstance(f.value, dict):
                     val_str = str(f.value.get("coverage_pct") or f.value.get("inverter_status_code") or "Structured")
