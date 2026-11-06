@@ -25,22 +25,25 @@ def ist_now() -> dt.datetime:
 
 def drain(quiet_s: int, max_s: int) -> tuple[list[dict], dict]:
     import paho.mqtt.client as mqtt
-    host, port = os.environ["MQTT_BROKER"], int(os.environ["MQTT_PORT"])
-    serial = os.environ["LOGGER_SERIAL"]
-    topic = os.environ.get("MQTT_TOPIC", f"solar/{serial}")
-    cid = os.environ.get("MQTT_CLIENT_ID") or f"solarpulse_gha_{serial}"
+    env = lambda k, d="": (os.environ.get(k) or d).strip()
+    host, port = env("MQTT_BROKER"), int(env("MQTT_PORT", "1883"))
+    serial = env("LOGGER_SERIAL")
+    topic = f"solar/{serial}"          # exact topic, built from the serial (MQTT_TOPIC secret is not used)
+    cid = env("MQTT_CLIENT_ID") or f"solarpulse_gha_{serial}"
     samples, stats = [], {"msgs": 0, "bad": 0, "connected": False, "subscribed": False}
     last = [time.time()]; done = threading.Event(); lock = threading.Lock()
 
     kw = dict(client_id=cid, clean_session=False)
     c = (mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, **kw)
          if hasattr(mqtt, "CallbackAPIVersion") else mqtt.Client(**kw))
-    c.username_pw_set(os.environ["MQTT_USERNAME"], os.environ["MQTT_PASSWORD"])
-    if os.environ.get("MQTT_USE_TLS", "false").lower() in ("1", "true", "yes"):
+    c.username_pw_set(env("MQTT_USERNAME"), env("MQTT_PASSWORD"))
+    if env("MQTT_USE_TLS", "false").lower() in ("1", "true", "yes"):
         c.tls_set()
 
     def on_connect(cl, ud, flags, rc, *a):
         stats["connected"] = (getattr(rc, "value", rc) == 0)
+        stats["connack"] = str(rc)
+        print(f"broker answer to login: {rc}  (host={host} port={port} client_id_len={len(cid)} user_len={len(env('MQTT_USERNAME'))})", flush=True)
         if stats["connected"]:
             cl.subscribe(topic, qos=1)
         else:
@@ -59,12 +62,21 @@ def drain(quiet_s: int, max_s: int) -> tuple[list[dict], dict]:
             if s: samples.append(s)
             elif s is None: stats["bad"] += 0  # non-telemetry (e.g. fault flags) is ignored on purpose
 
-    c.on_connect, c.on_subscribe, c.on_message = on_connect, on_subscribe, on_message
-    c.connect(host, port, keepalive=60); c.loop_start()
+    def on_disconnect(cl, ud, *a):
+        print("disconnected:", a, flush=True)
+
+    c.on_connect, c.on_subscribe, c.on_message, c.on_disconnect = on_connect, on_subscribe, on_message, on_disconnect
+    try:
+        c.connect(host, port, keepalive=60)
+    except Exception as e:
+        print(f"ERROR: TCP/connect failed: {type(e).__name__}: {e}"); return [], stats
+    c.loop_start()
     t0 = time.time()
     while not done.is_set():
         time.sleep(1)
         if time.time() - t0 > max_s: break
+        if not stats["connected"] and time.time() - t0 > 60:
+            print("ERROR: no login answer from the broker within 60 s"); break
         if stats["subscribed"] and time.time() - last[0] > quiet_s: break   # queue drained
     c.loop_stop(); c.disconnect()           # persistent session stays on the broker
     return samples, stats
@@ -88,7 +100,7 @@ def load_day(day: dt.date) -> list[dict]:
 
 
 def site_from_env() -> Site:
-    g = os.environ.get
+    g = lambda k, d=None: (os.environ.get(k) or d or "").strip() or d
     ws = dt.time.fromisoformat(g("WINDOW_START", "07:00")); we = dt.time.fromisoformat(g("WINDOW_END", "18:00"))
     return Site(client=g("CLIENT_NAME", "Client name"), address=g("PLANT_ADDRESS", "—"),
                 plant_id=g("PLANT_ID", g("LOGGER_SERIAL", "—")), serial=g("LOGGER_SERIAL", "—"),
@@ -105,7 +117,7 @@ def main() -> int:
     a = ap.parse_args()
     if not a.no_collect:
         samples, st = drain(a.quiet, a.max)
-        print(f"collect: connected={st['connected']} subscribed={st['subscribed']} messages={st['msgs']} samples={len(samples)}")
+        print(f"collect: connected={st['connected']} subscribed={st['subscribed']} messages={st['msgs']} samples={len(samples)} connack={st.get('connack')}")
         if not st["connected"]:
             print("ERROR: could not connect to the broker"); return 2
         store(samples)
