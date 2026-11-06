@@ -17,7 +17,8 @@ jobs:
           python - <<'PY'
           import os, time, paho.mqtt.client as mqtt
           H, P, U, W, S = (os.environ[k].strip() for k in "H P U W S".split())
-          print("paho", mqtt.__version__, "| host_len", len(H), "| port", P, "| user_len", len(U), "| pass_len", len(W))
+          import importlib.metadata as md
+          print("paho", md.version("paho-mqtt"), "| host_len", len(H), "| port", P, "| user_len", len(U), "| pass_len", len(W))
           combos = [("solarpulse_gha_" + S, False), ("solarpulse_gha_" + S, True),
                     ("solar_raw_gha_" + S, False), ("solar_raw_gha_" + S, True),
                     ("gha_test_1", True), ("solarbot", True)]
