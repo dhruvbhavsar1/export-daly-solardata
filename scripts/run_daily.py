@@ -1,18 +1,22 @@
-"""Nightly job: drain the broker's queued messages -> store -> build the daily HTML report.
+"""Collect from Yalgaar (or the old username/password broker) -> store -> build the daily HTML report.
 
-Why this works without a 24/7 server: the broker keeps QoS-1 messages for a persistent
-session (clean_session=False + a fixed client id). Each run reconnects with the SAME id and
-receives everything sent since the last run. (Seen in your capture: one connect returned 1070
-queued messages with device times up to 8 days old.)
+Yalgaar path (used when YALGAAR_CLIENT_KEY is set): login is the MQTT client id "<clientKey>/<uuid>",
+no username/password. See app/yalgaar_client.py. Each run subscribes to the logger channel, asks
+Yalgaar for stored history (max 100 messages) and keeps whatever the broker had queued for us.
+Several runs per day (see .github/workflows/daily-report.yml) mean no message is lost even if
+history is limited to 100.
 
-NEVER run two clients with the same MQTT_CLIENT_ID at once (e.g. your PC and GitHub):
-the broker kicks one off and the queue is split. Give each its own id, or stop one.
+Old path (no key set): plain MQTT username/password with a persistent session.
+
+NEVER run two clients with the same client id / uuid at once (your PC and GitHub need different
+YALGAAR_UUID values): the broker rejects or kicks one off.
 """
 from __future__ import annotations
 import argparse, datetime as dt, json, os, sys, threading, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.html_report import Site, build_daily_html, parse_message, dedupe
+from app import yalgaar_client
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "data" / "raw"          # one JSONL per IST day, parsed samples only (no credentials)
@@ -109,18 +113,62 @@ def site_from_env() -> Site:
                 window_start=ws, window_end=we)
 
 
+def load_env_file() -> None:
+    """Local PC runs: read .env from the project folder (real environment variables win)."""
+    f = ROOT / ".env"
+    if not f.is_file(): return
+    for line in f.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", "/")) or "=" not in line: continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+def collect_yalgaar(cfg, quiet: int, max_s: int) -> int:
+    samples, st = yalgaar_client.collect(cfg, quiet, max_s)
+    print(f"collect: connected={st['connected']} subscribed={st['subscribed']} live={st['live']} "
+          f"history_msgs={st['history_msgs']} samples={len(samples)} unparsed={st['unparsed']} "
+          f"login={yalgaar_client.explain(st['connack']) if st['connack'] is not None else 'no answer'}")
+    if st["unparsed"]:
+        OUT_DIR.mkdir(exist_ok=True)
+        (OUT_DIR / "unparsed_sample.txt").write_text("\n\n----\n\n".join(st["unparsed_raw"]), encoding="utf-8")
+        print("NOTE: some messages were not in the expected layout. Shapes (no values):")
+        for sh in st["unparsed_shapes"]: print("  ", sh)
+    if not st["connected"]:
+        print("ERROR: could not log in to Yalgaar (see the 'broker answer' line above)"); return 2
+    if not st["subscribed"]:
+        print("ERROR: logged in, but the channel subscription was refused"); return 2
+    store(samples)
+    return 0
+
+
 def main() -> int:
+    load_env_file()
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", help="IST day to report (default: today IST)")
     ap.add_argument("--no-collect", action="store_true", help="only rebuild from stored data")
+    ap.add_argument("--collect-only", action="store_true", help="collect and store, do not build the report")
+    ap.add_argument("--keep-going", action="store_true", help="if collecting fails, still build the report from stored data")
     ap.add_argument("--quiet", type=int, default=45); ap.add_argument("--max", type=int, default=420)
     a = ap.parse_args()
     if not a.no_collect:
-        samples, st = drain(a.quiet, a.max)
-        print(f"collect: connected={st['connected']} subscribed={st['subscribed']} messages={st['msgs']} samples={len(samples)} connack={st.get('connack')}")
-        if not st["connected"]:
-            print("ERROR: could not connect to the broker"); return 2
-        store(samples)
+        try:
+            cfg = yalgaar_client.config_from_env()
+        except ValueError as e:
+            print("ERROR:", e); return 2
+        if cfg is not None:
+            rc = collect_yalgaar(cfg, a.quiet, a.max)
+            if rc and not a.keep_going: return rc
+            if rc: print("WARNING: collecting failed now; building the report from data stored by earlier runs")
+        else:
+            samples, st = drain(a.quiet, a.max)
+            print(f"collect (old username/password path): connected={st['connected']} subscribed={st['subscribed']} "
+                  f"messages={st['msgs']} samples={len(samples)} connack={st.get('connack')}")
+            if not st["connected"]:
+                print("ERROR: could not connect to the broker"); return 2
+            store(samples)
+    if a.collect_only:
+        return 0
     day = dt.date.fromisoformat(a.date) if a.date else ist_now().date()
     cur = load_day(day)
     prev_e = max((x["e_kwh"] for x in load_day(day - dt.timedelta(days=1))), default=None)
