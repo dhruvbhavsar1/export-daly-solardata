@@ -1,13 +1,7 @@
 name: Daily solar report
-# Collect runs (09:00, 11:30, 14:00, 16:30 IST) keep the day's readings safe in data/raw.
-# The evening run (18:45 IST) collects once more, builds the HTML + PDF and emails them.
+# MANUAL ONLY now. The always-on service (scripts/service.py) collects all day and sends the 18:00 email.
+# Keep this workflow as a backup / for one-off tests.
 on:
-  schedule:
-    - cron: "30 3 * * *"     # 09:00 IST  collect
-    - cron: "0 6 * * *"      # 11:30 IST  collect
-    - cron: "30 8 * * *"     # 14:00 IST  collect
-    - cron: "0 11 * * *"     # 16:30 IST  collect
-    - cron: "15 13 * * *"    # 18:45 IST  collect + report + email
   workflow_dispatch:
     inputs:
       mode:

@@ -123,7 +123,7 @@ def _flag(v: Optional[str], default: bool) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
-def config_from_env(env: Optional[dict] = None) -> Optional[YalgaarConfig]:
+def config_from_env(env: Optional[dict] = None, require_channel: bool = True) -> Optional[YalgaarConfig]:
     """Returns None when no client key is configured (caller then uses the old username/password path)."""
     e = env if env is not None else os.environ
     g = lambda k, d="": (e.get(k) or d).strip()
@@ -135,7 +135,7 @@ def config_from_env(env: Optional[dict] = None) -> Optional[YalgaarConfig]:
     uuid = g("YALGAAR_UUID")
     if not uuid:
         raise ValueError("YALGAAR_UUID is empty. Use a name like solarpulse-gha (letters, digits, - @ _).")
-    if not channel:
+    if not channel and require_channel:
         raise ValueError("YALGAAR_CHANNEL (or LOGGER_SERIAL) is empty.")
     hist = int(g("YALGAAR_HISTORY", "100") or 0)
     return YalgaarConfig(

@@ -1,29 +1,20 @@
-# Environment variables and secrets
+# secrets and customer data: never in Git
 .env
-*.env
 .env.*
 !.env.example
+plants.json
+loggers.json
 
-# Python cache & artifacts
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-raw_mqtt_data.txt
-out/
-# Virtual environments
-venv/
+# local / generated
 .venv/
-env/
-mqtt_raw_capture.py
-# Testing and IDEs
+__pycache__/
+*.pyc
 .pytest_cache/
 .pytest_temp/
-.coverage
-htmlcov/
-.vscode/
-.idea/
-
-# Reports and generated PDFs
+data/*
+!data/.gitkeep
+*.db
+*.db-*
+out/
+logs/
 reports/
-!Solar_Data_Logger_Formula_Profile(1).pdf

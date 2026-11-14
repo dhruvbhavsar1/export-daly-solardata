@@ -157,3 +157,8 @@ def test_config_from_env():
     with pytest.raises(ValueError):
         yc.config_from_env({"YALGAAR_CLIENT_KEY": "k", "LOGGER_SERIAL": "1"})
     assert yc.config_from_env({"YALGAAR_CLIENT_KEY": "k", "YALGAAR_UUID": "u", "LOGGER_SERIAL": "1", "YALGAAR_HISTORY": "500"}).history == 100
+
+
+def test_service_config_needs_no_single_channel():
+    c = yc.config_from_env({"YALGAAR_CLIENT_KEY": "k", "YALGAAR_UUID": "u"}, require_channel=False)
+    assert c.client_id == "k/u" and c.channel == ""
