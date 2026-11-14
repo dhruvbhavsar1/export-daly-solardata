@@ -1,0 +1,6 @@
+[
+  {"serial": "1380000000001", "mac": "0000000000000000", "plant_id": "1380000000001", "client": "Example Customer",
+   "address": "Street, Surat", "mobile": "", "kwp": 10, "inverter_make": "Solis", "inverter_model": "10K", "inverter_sn": "",
+   "panel_type": "", "plan": "Premium", "invested_inr": 500000, "commissioned": "2024-03-15", "tariff_inr": 7.0, "psh": null,
+   "city": "Surat", "lat": 21.17, "lon": 72.83}
+]

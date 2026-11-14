@@ -206,6 +206,17 @@ def parse_faults(payload: dict) -> Optional[dict[str, Any]]:
             "active": sorted(x["name"] for x in pl.get("functionPayload", []) if x["value"] and x["name"] != "deviceType")}
 
 
+def _inr(v: Optional[float]) -> str:
+    """Indian digit grouping without decimals: 1000000 -> 10,00,000."""
+    n = int(round(abs(v or 0)))
+    s = str(n)
+    if len(s) > 3:
+        head, tail = s[:-3], s[-3:]
+        head = ",".join([head[max(0, i - 2):i] for i in range(len(head), 0, -2)][::-1])
+        s = head + "," + tail
+    return ("-" if (v or 0) < 0 else "") + s
+
+
 def _slots(s: list[dict]) -> list[tuple[str, float]]:
     """Today's energy split by time of day, from differences of the inverter's daily counter."""
     firsts: dict[int, dict] = {}
@@ -334,7 +345,7 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
     annual = recovered / yrs if (recovered is not None and yrs and yrs > 0.1) else None
     payback = inv / annual if (inv and annual) else None
     ach_m = pr_mon                                            # Actual vs Expected (month): benchmark factor 1.0
-    money = lambda x: NA if x is None else f"₹{x:,.0f}"
+    money = lambda x: NA if x is None else f"₹{_inr(x)}"
 
     def chg(label, cur, prev, basis=""):
         c = calc.change(cur, prev)
@@ -345,11 +356,11 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
 
     hero = f"""
 <section class="savings-feature"><div class="savings-story">
-<h2>Your Solar<br/>Saved <em>₹{val_d:,.0f}</em><br/>Today</h2>
+<h2>Your Solar<br/>Saved <em>₹{_inr(val_d)}</em><br/>Today</h2>
 <p>{esc(site.client)}'s plant produced {e:.1f} kWh on {day:%A, %d %B %Y}, peaking at {m['peak_kw']:.2f} kW around {m['peak_t']:%H:%M}. The figures are estimates at ₹{site.tariff:g} per kWh, not a bill amount.</p></div>
 <div class="savings-metrics">
-<div class="savings-tile yellow"><strong>₹{val_d:,.0f}</strong><span>ESTIMATED VALUE</span></div>
-<div class="savings-tile black"><strong>₹{val_m:,.0f}</strong><span>ESTIMATED VALUE THIS MONTH</span></div>
+<div class="savings-tile yellow"><strong>₹{_inr(val_d)}</strong><span>ESTIMATED VALUE</span></div>
+<div class="savings-tile black"><strong>₹{_inr(val_m)}</strong><span>ESTIMATED VALUE THIS MONTH</span></div>
 <div class="savings-tile stone"><strong>{e:.1f}</strong><span>KWH TODAY</span></div>
 <div class="savings-tile white"><strong>{m['peak_kw']:.2f}</strong><span>PEAK KW</span></div></div></section>"""
 
@@ -472,8 +483,8 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
         a, b = sd[kind], sm[kind]
         return (f'<div class="panel"><h2>{esc(kind)}</h2><div class="caption">Estimated loss while the inverter was stopped</div>'
                 + row("Trips today / this month", f"{a['n']} / {b['n']}") + row("Time stopped today", f"{a['minutes']:.0f} min")
-                + row("Estimated loss today", f"{a['kwh']:.1f} kWh · ₹{a['inr']:,.0f}") + row("Estimated loss this month", f"{b['kwh']:.1f} kWh · ₹{b['inr']:,.0f}") + "</div>")
-    trs = "".join(f'<tr><td>{x["start"]:%H:%M}–{x["end"]:%H:%M}</td><td>{x["minutes"]:.0f} min</td><td>{esc(x["kind"])}</td><td>{esc(", ".join(x["codes"]) or "no alarm received")}</td><td>{x["loss_kwh"]:.1f} kWh</td><td>₹{x["loss_inr"]:,.0f}</td></tr>' for x in ev)
+                + row("Estimated loss today", f"{a['kwh']:.1f} kWh · ₹{_inr(a['inr'])}") + row("Estimated loss this month", f"{b['kwh']:.1f} kWh · ₹{_inr(b['inr'])}") + "</div>")
+    trs = "".join(f'<tr><td>{x["start"]:%H:%M}–{x["end"]:%H:%M}</td><td>{x["minutes"]:.0f} min</td><td>{esc(x["kind"])}</td><td>{esc(", ".join(x["codes"]) or "no alarm received")}</td><td>{x["loss_kwh"]:.1f} kWh</td><td>₹{_inr(x["loss_inr"])}</td></tr>' for x in ev)
     tsec = f"""
 <h2 class="section-title">05 / Trips &amp; estimated loss</h2>
 <section class="tripcards">{tcard(tp.GRID)}{tcard(tp.INTERNAL)}</section>

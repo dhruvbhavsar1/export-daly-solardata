@@ -73,3 +73,14 @@ def test_store_faults_trips_history_and_plants_overlay(tmp_path):
     (tmp_path / "plants.json").write_text('[{"serial":"S1","client":"New Name","mac":"M1","kwp":40,"plan":"Premium"}]')
     (lg,) = load_loggers(tmp_path / "loggers.json")
     assert lg.name == "New Name" and lg.macs == ["M1"] and lg.kwp == 40
+
+def test_indian_rupee_grouping_and_roi_formula():
+    from app.html_report import _inr
+    assert [_inr(x) for x in (0, 123, 7496, 55500, 300000, 1000000, 1234567, 12345678)] == ["0", "123", "7,496", "55,500", "3,00,000", "10,00,000", "12,34,567", "1,23,45,678"]
+    s, f = day_with_stop()
+    import datetime as dt
+    site = Site(client="X", address="Y", plant_id="P", serial="S", kwp=40, tariff=7.0, invested_inr=1000000, commissioned=dt.date(2021, 11, 12))
+    h = build_daily_html(s, DAY, site, faults=f)
+    life = s[-1]["total_kwh"]
+    assert f"₹{_inr(life * 7.0)}" in h and "₹10,00,000" in h                      # Recovered = lifetime kWh x tariff
+    assert f"{life * 7.0 / 1000000 * 100:.1f}%" in h                              # ROI = recovered x 100 / invested

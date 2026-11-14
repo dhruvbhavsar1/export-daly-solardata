@@ -1,5 +1,5 @@
 """Safe .env check: shows plain values for non-secret keys, and only the LENGTH for secrets.
-Run it inside the folder that has the .env file:   python check_env.py
+Run it inside the folder that has the .env file:   python scripts/check_env.py
 """
 from pathlib import Path
 

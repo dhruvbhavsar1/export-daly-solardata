@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 from app import service as svc          # noqa: E402
 from app import yalgaar_client as yc    # noqa: E402
 from app.store import Store             # noqa: E402
-from scripts.run_daily import load_env_file  # noqa: E402
+from app.envfile import load_env_file  # noqa: E402
 
 
 def main() -> int:

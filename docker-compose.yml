@@ -1,9 +1,18 @@
 services:
   solarpulse:
     build: .
+    init: true
     restart: unless-stopped
     env_file: .env
+    shm_size: "1gb"                          # Chromium (PDF) crashes with the default 64 MB
+    environment:
+      TZ: Asia/Kolkata
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data                     # the database: back it up
       - ./logs:/app/logs
       - ./out:/app/out
+      - ./plants.json:/app/plants.json:ro    # customer data stays outside Git and outside the image
+      - ./loggers.json:/app/loggers.json:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }

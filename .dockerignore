@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+plants.json
+loggers.json
+.venv/
+.git/
+data/
+out/
+logs/
+reports/
+docs/
+tests/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_temp/
