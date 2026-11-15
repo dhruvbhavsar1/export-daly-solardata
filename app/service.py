@@ -106,7 +106,8 @@ def site_for(lg: LoggerCfg, st: Settings) -> Site:
                 inverter_make=p.get("inverter_make") or "", inverter_model=p.get("inverter_model") or "",
                 inverter_sn=p.get("inverter_sn") or "", panel_type=p.get("panel_type") or "",
                 plan=p.get("plan") or "Premium", invested_inr=num("invested_inr"), commissioned=comm,
-                city=p.get("city") or "Surat", lat=num("lat") or 21.17, lon=num("lon") or 72.83)
+                city=p.get("city") or "Surat", lat=num("lat") or 21.17, lon=num("lon") or 72.83,
+                lifetime_offset_kwh=num("lifetime_offset_kwh") or 0.0)
 
 
 # ------------------------------------------------------------------ collecting

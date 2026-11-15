@@ -47,6 +47,7 @@ class Site:
     invested_inr: Optional[float] = None
     commissioned: Optional[dt.date] = None
     helpline: str = "+91 7574-946000"      # shown in the page header
+    lifetime_offset_kwh: float = 0.0       # energy on the inverter counter that is NOT this plant's: subtracted
     city: str = "Surat"                   # weather location (all plants are in Surat; override per plant)
     lat: float = 21.17
     lon: float = 72.83
@@ -260,12 +261,14 @@ def _lines(labels: list[str], actual: list, expected: Optional[list]) -> str:
 
 def _bars(labels: list[str], values: list, note: str = "") -> str:
     mx = max([v for v in values if v] or [1])
+    fmt = ".1f" if len(values) <= 12 else ".0f"            # few bars: one decimal; a whole month: whole numbers
     return '<div class="bars">' + "".join(
-        f'<div class="baritem"><div class="bar" title="{lb}: {(v or 0):.1f} kWh" style="height:{max(3, (v or 0) / mx * 85):.0f}%;{"opacity:.15" if v is None else ""}"></div><small>{lb}</small></div>'
+        f'<div class="baritem">{f"<small class=bv>{v:{fmt}}</small>" if v else ""}<div class="bar" title="{lb}: {(v or 0):.1f} kWh" style="height:{max(3, (v or 0) / mx * 80):.0f}%;{"opacity:.15" if v is None else ""}"></div><small>{lb}</small></div>'
         for lb, v in zip(labels, values)) + "</div>" + (f'<p class="note">{note}</p>' if note else "")
 
 
 EXTRA_CSS = """
+.bv{font-size:10px;font-weight:700;color:#1D4033}
 .brand .n1{font:900 31px/1 'Arial Black',Arial,sans-serif;color:#0B2A6B;letter-spacing:-.5px}
 .brand .n2{font:900 18px/1.2 'Arial Black',Arial,sans-serif;color:#1B6B1E;margin-top:2px}
 .terminal .tg{display:grid;grid-template-columns:1fr 1fr;gap:0 40px}.terminal .termrow{max-width:none}
@@ -280,6 +283,32 @@ EXTRA_CSS = """
 table.t{width:100%;border-collapse:collapse;font-size:13px}table.t td,table.t th{padding:8px 10px;border-bottom:1px solid var(--border);text-align:left}
 @media(max-width:650px){.tripcards{grid-template-columns:1fr}.terminal .tg{grid-template-columns:1fr}}
 @media print{.vw{display:block!important}.seg{display:none}.panel,.card,.terminal,.savings-feature,.notice{break-inside:avoid}.section-title{break-after:avoid}}
+/* ---- phone and small-screen fixes ---- */
+html,body{max-width:100%;overflow-x:hidden}
+@media(min-width:1101px){.kpis6{grid-template-columns:repeat(6,minmax(0,1fr))}}
+@media(max-width:1100px){.cols,.cols.equal{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:900px){.savings-feature{grid-template-columns:minmax(0,1fr)}}
+.savings-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+.savings-tile{min-width:0;overflow:hidden}
+.panel,.chartbox{min-width:0;overflow:hidden}
+.baritem{min-width:0}
+.bars{gap:3px}
+@media(max-width:650px){
+.shell{padding:12px 10px 40px}
+.header{gap:10px}.brand .n1{font-size:24px}.brand .n2{font-size:14px}.headright{gap:6px}.pill{padding:6px 9px;font-size:10px}
+.savings-feature{padding:18px 14px}.savings-story h2{font-size:32px;letter-spacing:-1.5px}
+.savings-metrics{gap:8px}.savings-tile{height:auto;min-height:88px;padding:12px}
+.savings-tile strong{font-size:22px;white-space:normal}
+.savings-tile span{font-size:8px;letter-spacing:.8px;line-height:1.3;overflow-wrap:anywhere}
+.card{min-height:0;padding:14px}.card small{font-size:12px}.value{font-size:24px}.note{font-size:11px}
+.panel{padding:14px}.terminal{padding:16px}
+.chartbox svg text{font-size:26px}
+.bars{height:170px}.baritem small{font-size:8px}
+.vw[data-v="d"] .baritem:not(:nth-child(5n+1)) > small:last-child{visibility:hidden}
+.vw[data-v="d"] .bv{writing-mode:vertical-rl;transform:rotate(180deg);font-size:9px}
+.row{flex-wrap:wrap;gap:4px 12px}
+table.t td,table.t th{padding:6px;font-size:12px}
+}
 """
 
 
@@ -307,6 +336,14 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
         if prev_energy is not None: hist[day - dt.timedelta(days=1)] = prev_energy
         hist.update(dict(month_days or []))
     hist[day] = e
+    # ---- average estimated value per day: last 30 days that have data; today only when the day is complete
+    complete = not (gen_dt.date() == day and gen_dt.time() < site.window_end)
+    avg_days = [d for d in hist if day - dt.timedelta(days=29) <= d <= day and (complete or d != day)]
+    avg_kwh = sum(hist[d] for d in avg_days) / len(avg_days) if avg_days else None
+    avg_val = avg_kwh * site.tariff if avg_kwh is not None else None
+    avg_line = ('<div class="chg">Average per day: <b class="dim">N/A</b></div>' if avg_kwh is None else
+                f'<div class="chg">Average per day: <b>{avg_kwh:.1f} kWh</b> · {len(avg_days)} day{"s" if len(avg_days) != 1 else ""}</div>')
+    
     mi = calc.month_info(hist, day)
     mon = mi["kwh"] if (history is not None or month_days) else (month_energy if month_energy is not None else e)
     yest = hist.get(day - dt.timedelta(days=1))
@@ -315,6 +352,7 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
     in_win = [x for x in s if site.window_start <= x["t"].time() <= site.window_end]
     cover = len(in_win) / n_exp * 100
     mm = m["mismatch_pct"]; scale_ok = mm is not None and mm <= 10
+
     # ---- derived values
     psh = site.psh
     pr_day, pr_mon = calc.perf_ratio(e, kwp, psh), calc.perf_ratio(mon, kwp, psh, mi["days"])
@@ -338,12 +376,15 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
     health = 25 * sum(checks)
     # ---- ROI
     life = m["total_kwh"]
+    life = max(0.0, life - site.lifetime_offset_kwh) if life is not None else None
     recovered = life * site.tariff if life is not None else None
     inv = site.invested_inr
     roi = recovered / inv * 100 if (inv and recovered is not None) else None
     yrs = (day - site.commissioned).days / 365.25 if site.commissioned else None
     annual = recovered / yrs if (recovered is not None and yrs and yrs > 0.1) else None
     payback = inv / annual if (inv and annual) else None
+
+    payback_m = payback * 12 if payback is not None else None 
     ach_m = pr_mon                                            # Actual vs Expected (month): benchmark factor 1.0
     money = lambda x: NA if x is None else f"₹{_inr(x)}"
 
@@ -362,12 +403,12 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
 <div class="savings-tile yellow"><strong>₹{_inr(val_d)}</strong><span>ESTIMATED VALUE</span></div>
 <div class="savings-tile black"><strong>₹{_inr(val_m)}</strong><span>ESTIMATED VALUE THIS MONTH</span></div>
 <div class="savings-tile stone"><strong>{e:.1f}</strong><span>KWH TODAY</span></div>
-<div class="savings-tile white"><strong>{m['peak_kw']:.2f}</strong><span>PEAK KW</span></div></div></section>"""
-
+<div class="savings-tile white"><strong>{m['peak_kw']:.2f}</strong><span>PEAK KW</span></div>
+<div class="savings-tile yellow" style="grid-column:1 / -1"><strong>{'N/A' if avg_val is None else '₹' + _inr(avg_val)}</strong><span>AVERAGE ESTIMATED VALUE PER DAY · {len(avg_days)} DAY{'S' if len(avg_days) != 1 else ''}</span><span style="margin-top:3px">{'' if avg_kwh is None else f'{avg_kwh:.1f} kWh per day'}</span></div></div></section>"""
     card = lambda c, t, v, u, n: f'<div class="card" style="--accent:var(--{c})"><small>{t}</small><div class="value">{v} <span style="font-size:16px">{u}</span></div><div class="note">{n}</div></div>'
     nm = f"Month-to-date vs same {mi['elapsed']} days of last month"
-    kpis = '<section class="grid kpis" style="grid-template-columns:repeat(6,minmax(0,1fr))">' + "".join([
-        card("sun", "Today’s Generation", f"{e:.1f}", "kWh", chg("+ / − From Yesterday", e, yest)),
+    kpis = '<section class="grid kpis kpis6">' + "".join([
+        card("sun", "Today’s Generation", f"{e:.1f}", "kWh", chg("+ / − From Yesterday", e, yest) + avg_line),
         card("cyan", "This Month (stored days)", f"{mon:.1f}", "kWh", chg("+ / − From Last Month", mon, mi["last_month"])),
         card("green", "Lifetime Generation", _f(life, 0), "kWh", "Inverter counter"),
         card("pink", "Performance Ratio", _f(pr_day, 1), "%" if pr_day is not None else "", f"Today, assumed {psh:g} sun hours" if (psh and kwp) else "Needs plant kWp and sun hours"),
@@ -444,7 +485,7 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
 {row("Expected kWh (kWp × sun hours × days)", _f(exp_mon, 1, " kWh"))}{row("Actual kWh", f"{mon:.1f} kWh")}{row("Performance Ratio", _f(pr_mon, 1, "%"))}{row("Specific Yield (F06)", _f(yld_m, 2, " kWh/kWp"))}
 {row("CUF (Month)", f'<span class="{cuf_c}">{_f(cuf_m, 1, "%")}</span>')}{row(f"CO₂ Offset (est., {f:g} kg/kWh)", f"{co2_m:.1f} kg")}{row("Estimated value", money(val_m))}</div>
 <div class="panel"><h2>Financial Data</h2><div class="caption">Estimates at the tariff below</div>
-{row("Estimated value this month", money(val_m))}{row("Tariff", f"₹{site.tariff:.2f} / Unit")}{row("Annual Saving (estimate)", money(annual))}{row("Payback", _f(payback, 1, " years"))}{row("Actual Saving", "— (meter needed)")}{row("Date &amp; Time of Report Generation", gen_at)}</div></section>{sw}"""
+{row("Estimated value this month", money(val_m))}{row("Tariff", f"₹{site.tariff:.2f} / Unit")}{row("Annual Saving (estimate)", money(annual))}{row("Payback", _f(payback_m, 1, " months"))}{row("Actual Saving", "— (meter needed)")}{row("Date &amp; Time of Report Generation", gen_at)}</div></section>{sw}"""
 
     if weather:
         w = weather
@@ -475,7 +516,7 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
 {row("Equivalent trees (needs a year of data)", NA)}{row("Check: 6,000 ÷ 22", "≈ 273 trees ✓")}</div></section>
 {wsec}
 <section class="panel" style="margin-top:18px"><h2>Investment ROI</h2><div class="caption">From the plant data in plants.json and the inverter’s lifetime energy (estimate)</div>
-<div class="dual"><div class="mini"><small>Investment ROI</small><strong style="color:var(--sun)">{_f(roi, 1, "%")}</strong></div><div class="mini"><small>Payback</small><strong>{_f(payback, 1, " years")}</strong></div>
+<div class="dual"><div class="mini"><small>Investment ROI</small><strong style="color:var(--sun)">{_f(roi, 1, "%")}</strong></div><div class="mini"><small>Payback</small><strong>{_f(payback_m, 1, " months")}</strong></div>
 <div class="mini"><small>Recovered</small><strong>{money(recovered) if inv else 'N/A'}</strong></div><div class="mini"><small>Invested</small><strong>{money(inv)}</strong></div></div>
 {mt("ROI Progress", _f(roi, 1, "%") if roi is not None else "N/A", "--sun", roi or 0)}</section>"""
 
