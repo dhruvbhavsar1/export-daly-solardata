@@ -269,6 +269,9 @@ def _bars(labels: list[str], values: list, note: str = "") -> str:
 
 EXTRA_CSS = """
 .bv{font-size:10px;font-weight:700;color:#1D4033}
+.savings-tile .avgrow{display:flex;gap:10px 36px;flex-wrap:wrap;align-items:flex-end}
+.savings-tile .avgbox span{display:block;font-size:13px;letter-spacing:1.2px;color:#3f4a3a;margin-top:6px}
+.savings-tile .avgcap{display:block;font-size:13px;letter-spacing:1.5px;color:#3f4a3a;margin-top:12px;font-weight:600}
 .brand .n1{font:900 31px/1 'Arial Black',Arial,sans-serif;color:#0B2A6B;letter-spacing:-.5px}
 .brand .n2{font:900 18px/1.2 'Arial Black',Arial,sans-serif;color:#1B6B1E;margin-top:2px}
 .terminal .tg{display:grid;grid-template-columns:1fr 1fr;gap:0 40px}.terminal .termrow{max-width:none}
@@ -308,6 +311,7 @@ html,body{max-width:100%;overflow-x:hidden}
 .vw[data-v="d"] .bv{writing-mode:vertical-rl;transform:rotate(180deg);font-size:9px}
 .row{flex-wrap:wrap;gap:4px 12px}
 table.t td,table.t th{padding:6px;font-size:12px}
+.savings-tile .avgrow{gap:8px 18px}.savings-tile .avgbox span,.savings-tile .avgcap{font-size:11px;letter-spacing:.6px}
 }
 """
 
@@ -404,7 +408,7 @@ def build_daily_html(samples: list[dict], day: dt.date, site: Site,
 <div class="savings-tile black"><strong>₹{_inr(val_m)}</strong><span>ESTIMATED VALUE THIS MONTH</span></div>
 <div class="savings-tile stone"><strong>{e:.1f}</strong><span>KWH TODAY</span></div>
 <div class="savings-tile white"><strong>{m['peak_kw']:.2f}</strong><span>PEAK KW</span></div>
-<div class="savings-tile yellow" style="grid-column:1 / -1"><strong>{'N/A' if avg_val is None else '₹' + _inr(avg_val)}</strong><span>AVERAGE ESTIMATED VALUE PER DAY · {len(avg_days)} DAY{'S' if len(avg_days) != 1 else ''}</span><span style="margin-top:3px">{'' if avg_kwh is None else f'{avg_kwh:.1f} kWh per day'}</span></div></div></section>"""
+<div class="savings-tile yellow" style="grid-column:1 / -1"><div class="avgrow"><div class="avgbox"><strong>{'N/A' if avg_val is None else '₹' + _inr(avg_val)}</strong><span>ESTIMATED VALUE PER DAY</span></div><div class="avgbox"><strong>{'N/A' if avg_kwh is None else f'{avg_kwh:.1f} kWh'}</strong><span>GENERATION PER DAY</span></div></div><span class="avgcap">AVERAGE OF {len(avg_days)} DAY{'S' if len(avg_days) != 1 else ''}</span></div></div></section>"""
     card = lambda c, t, v, u, n: f'<div class="card" style="--accent:var(--{c})"><small>{t}</small><div class="value">{v} <span style="font-size:16px">{u}</span></div><div class="note">{n}</div></div>'
     nm = f"Month-to-date vs same {mi['elapsed']} days of last month"
     kpis = '<section class="grid kpis kpis6">' + "".join([
