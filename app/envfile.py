@@ -1,10 +1,14 @@
 """Read the project's .env file into the environment (real environment variables win)."""
 from __future__ import annotations
-
+import sys
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[1]
+)
 
 
 def load_env_file() -> None:

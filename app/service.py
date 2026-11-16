@@ -30,7 +30,11 @@ from app.mailer import send as send_mail, split_addresses
 from app.store import Store
 
 log = logging.getLogger("solarpulse")
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[1]
+)
 
 
 def ist_now() -> dt.datetime:

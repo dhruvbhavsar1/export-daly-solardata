@@ -15,7 +15,11 @@ import logging.handlers
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[1]
+)
 sys.path.insert(0, str(ROOT))
 from app import service as svc          # noqa: E402
 from app import yalgaar_client as yc    # noqa: E402

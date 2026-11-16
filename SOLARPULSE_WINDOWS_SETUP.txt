@@ -1,0 +1,203 @@
+SOLARPULSE / EXPORT-DAILY-SOLARDATA
+WINDOWS PC SETUP GUIDE
+=================================
+
+
+1. EXTRACT THE PROJECT
+----------------------
+Extract the ZIP to:
+
+C:\export-daly-solardata\
+
+Open Command Prompt or VS Code terminal in the project folder, then run:
+
+cd /d C:\export-daly-solardata
+
+If you extracted it elsewhere, use that actual folder path.
+
+2. CHECK PYTHON VERSIONS
+------------------------
+Run:
+
+py -0p
+py -3.11 --version
+
+The second command must report Python 3.11.x. If it says no suitable Python
+runtime was found, Python 3.11 is not installed or not registered with the
+Python launcher. Install Python 3.11 for Windows, reopen the terminal, and
+repeat these checks. Do not use Python 3.13 for this project.
+
+3. CREATE AND ACTIVATE THE PROJECT ENVIRONMENT
+----------------------------------------------
+From the project root, run:
+
+py -3.11 -m venv .venv
+.venv\Scripts\activate
+python --version
+
+The terminal should show (.venv), and python --version must report Python
+3.11.x.
+
+If an existing .venv was created with another Python version, remove only
+that project's .venv folder and recreate it using the commands above. Do not
+delete project data, the database, or other folders.
+
+4. INSTALL DEPENDENCIES
+-----------------------
+Keep (.venv) active and run:
+
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+
+Do not manually downgrade pycryptodome to version 3.4. The supplied
+requirements.txt requests a modern pycryptodome release.
+
+
+6. VERIFY YALGAAR SDK
+---------------------
+With (.venv) active, run:
+
+python --version
+python -m pip show pyYalgaar
+python -m pip show pycryptodome
+python -c "from yalgaar import Yalgaar; print('Yalgaar SDK OK')"
+
+The final command must print:
+
+Yalgaar SDK OK
+
+If it fails with "No module named 'imp'", the active interpreter is Python
+3.12 or newer, or the virtual environment was created with the wrong Python.
+Check python --version, recreate .venv using py -3.11, activate it, and
+reinstall the requirements.
+
+7. RUN THE PROJECT CHECK
+------------------------
+Run:
+
+python scripts\check_env.py
+
+Resolve any reported missing configuration or dependencies before starting
+the collector.
+
+8. TEST RAW YALGAAR COLLECTION
+-----------------------------
+Test during daylight when the inverters are publishing data, and only after
+the credentials and device mappings have been configured.
+
+Run a two-minute test:
+
+python scripts\yalgaar_by_device.py --timeout 36000
+
+The supplied collector defaults to this project-root folder:
+
+C:\export-daly-solardata\logger_data\
+
+Check it with:
+
+dir logger_data
+
+If DATA_DIR is set in .env, the collector writes to that configured folder
+instead. Check the actual configured folder. Do not use the old
+mqtt_raw_test project folder.
+
+Open a newly created raw text file and confirm it contains received device
+payloads and the expected headerMac information. A connection-success message
+alone does not prove that inverter data was received.
+
+9. IMPORT RAW DATA AND TEST REPORTS
+-----------------------------------
+
+python scripts\run_local.py --date 2026-11-16
+
+Check the output folder:
+
+out\
+
+10. RUN THE MAIN SERVICE
+------------------------
+Only after configuration and connection testing are complete, the main
+service can be started with:
+
+python scripts\service.py
+
+Before starting it, confirm which collector mode is intended for this PC.
+Do not run scripts\service.py and scripts\yalgaar_by_device.py concurrently
+with the same Yalgaar identity unless their connection/session configuration
+has specifically been reviewed and approved. Only one machine should listen
+with a given YALGAAR_UUID at a time.
+
+11. SELECT THE PYTHON INTERPRETER IN VS CODE (OPTIONAL)
+-------------------------------------------------------
+Open the project folder in VS Code. Press Ctrl+Shift+P and select:
+
+Python: Select Interpreter
+
+Choose the interpreter at:
+
+C:\export-daly-solardata\.venv\Scripts\python.exe
+
+If the project is in another folder, select that folder's .venv\Scripts\python.exe.
+Reload VS Code if Pylance still shows stale import warnings.
+
+12. WINDOWS TASK SCHEDULER (ONLY AFTER MANUAL TESTS PASS)
+--------------------------------------------------------
+Do not automate collection until the manual test has received real payloads
+and the output directory has been verified.
+
+Program:
+C:\export-daly-solardata\.venv\Scripts\python.exe
+
+Arguments (example; use only the approved script):
+C:\export-daly-solardata\scripts\yalgaar_by_device.py
+
+Start in:
+C:\export-daly-solardata
+
+Use the actual project path if different. Do not schedule two collectors
+using the same Yalgaar identity.
+
+TROUBLESHOOTING
+---------------
+A) 'py' is not recognized:
+   The Python Launcher may not be installed or available on PATH. Make the
+   Python 3.11 launcher available, reopen the terminal, and retry py -0p.
+
+B) 'No suitable Python runtime found' for py -3.11:
+   Python 3.11 is not installed or not registered with the launcher. Install
+   Python 3.11. An installed Python 3.13 does not meet this project's need.
+
+C) 'No module named imp':
+   The active interpreter is not Python 3.11. Check python --version while
+   .venv is activated. Recreate .venv with Python 3.11 and reinstall packages.
+
+D) Pylance says 'Import yalgaar could not be resolved':
+   Select the project's .venv interpreter in VS Code. Run the import test in
+   section 6 using that same interpreter.
+
+E) Yalgaar connects but no files are created:
+   Test during inverter publishing hours. Check credentials, channel/device
+   configuration, network access, output directory, and whether another PC
+   is already listening with the same YALGAAR_UUID.
+
+F) A file is created for an unknown MAC:
+   Do not rename or assign it to a customer by guessing. Confirm the physical
+   logger identity, then update the device mapping with the administrator.
+
+HANDOVER CHECKLIST
+------------------
+[ ] Python 3.11 is installed.
+[ ] Project .venv was created using Python 3.11.
+[ ] requirements.txt installed successfully.
+[ ] Playwright Chromium installed.
+[ ] .env configured privately; credentials are not shared in the ZIP.
+[ ] plants.json and loggers.json are configured correctly.
+[ ] Yalgaar import test prints 'Yalgaar SDK OK'.
+[ ] scripts\check_env.py passes.
+[ ] Live test receives real inverter payloads.
+[ ] Raw files appear in the intended project logger_data folder.
+[ ] Import and report generation are tested.
+[ ] Only one approved collector is running for the Yalgaar identity.
+[ ] Task Scheduler is configured only after manual testing succeeds.
+
+END OF GUIDE
